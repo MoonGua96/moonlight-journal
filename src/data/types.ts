@@ -1,0 +1,196 @@
+export type PageName =
+  | "today"
+  | "calendar"
+  | "todo"
+  | "diary"
+  | "notes"
+  | "albums"
+  | "vault"
+  | "inbox"
+  | "trash"
+  | "settings";
+export type CalendarItemType = "note" | "todo";
+export type TodoStatus = "todo" | "doing" | "paused" | "done";
+
+export interface CalendarItem {
+  id: string;
+  type: CalendarItemType;
+  date: string;
+  title: string;
+  time: string;
+  color: "purple" | "gold" | "sage" | "blue";
+  deletedAt?: string;
+}
+
+export interface Todo {
+  id: string;
+  title: string;
+  description: string;
+  status: TodoStatus;
+  color: "purple" | "gold" | "sage" | "blue";
+  dueDate: string;
+  position: number;
+  deletedAt?: string;
+}
+
+export interface DiarySnippet {
+  id: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface DiaryEntry {
+  date: string;
+  title: string;
+  body: string;
+  snippets: DiarySnippet[];
+  updatedAt: string;
+  deletedAt?: string;
+}
+
+export interface Note {
+  id: string;
+  title: string;
+  folder: string;
+  sections: NoteSection[];
+  updatedAt: string;
+  deletedAt?: string;
+}
+
+export interface NoteAsset {
+  id: string;
+  type: "image" | "drawing";
+  dataUrl: string;
+  x: number;
+  y: number;
+  width: number;
+}
+
+export interface NoteSection {
+  id: string;
+  title: string;
+  body: string;
+  assets?: NoteAsset[];
+}
+
+export interface InboxItem {
+  id: string;
+  text: string;
+  createdAt: string;
+  deletedAt?: string;
+}
+
+export interface Album {
+  id: string;
+  title: string;
+  description: string;
+  createdAt: string;
+  coverPhotoId?: string;
+  deletedAt?: string;
+}
+export interface AlbumPhoto {
+  id: string;
+  albumId: string;
+  title: string;
+  caption: string;
+  takenDate: string;
+  tags: string[];
+  favorite: boolean;
+  /** v0.3 legacy/browser-preview source. Desktop v0.4 keeps media outside SQLite. */
+  dataUrl?: string;
+  previewDataUrl?: string;
+  mediaType?: "image" | "video";
+  originalName?: string;
+  mimeType?: string;
+  size?: number;
+  duration?: number;
+  originalPath?: string;
+  previewPath?: string;
+  createdAt: string;
+  deletedAt?: string;
+}
+
+export interface Birthday {
+  id: string;
+  name: string;
+  calendar: "solar" | "lunar";
+  month: number;
+  day: number;
+  birthYear?: number;
+  leapMonth?: boolean;
+  leapFallback?: "regular" | "skip";
+  note?: string;
+  deletedAt?: string;
+}
+
+export interface Holiday {
+  id: string;
+  date: string;
+  name: string;
+  type: "national" | "makeup" | "custom";
+  deletedAt?: string;
+}
+
+export interface VaultEnvelope {
+  version: 1;
+  username: string;
+  salt: string;
+  iv: string;
+  ciphertext: string;
+  updatedAt: string;
+}
+
+export interface AppSettings {
+  userName: string;
+  setupCompleted: boolean;
+  chatUrl: string;
+  showMoon: boolean;
+  moonSize: number;
+  moonPosition: { x: number; y: number };
+  theme: "light" | "dark";
+  showDesktopPet: boolean;
+  backupDirectory: string;
+}
+
+export interface AppState {
+  calendarItems: CalendarItem[];
+  todos: Todo[];
+  diaries: DiaryEntry[];
+  notes: Note[];
+  albums: Album[];
+  photos: AlbumPhoto[];
+  birthdays: Birthday[];
+  holidays: Holiday[];
+  vault?: VaultEnvelope;
+  inbox: InboxItem[];
+  settings: AppSettings;
+}
+
+const localDateKey = (date: Date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+export const todayKey = localDateKey(new Date());
+export const makeId = (prefix: string) =>
+  `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+export const initialState: AppState = {
+  calendarItems: [],
+  todos: [],
+  diaries: [],
+  notes: [],
+  albums: [],
+  photos: [],
+  birthdays: [],
+  holidays: [],
+  inbox: [],
+  settings: {
+    userName: "",
+    setupCompleted: false,
+    chatUrl: "",
+    showMoon: true,
+    moonSize: 86,
+    moonPosition: { x: 0.88, y: 0.78 },
+    theme: "light",
+    showDesktopPet: true,
+    backupDirectory: "",
+  },
+};

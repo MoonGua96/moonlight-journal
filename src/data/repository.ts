@@ -1,0 +1,212 @@
+import type { AppState } from "./types";
+import { initialState } from "./types";
+import { convertFileSrc } from "@tauri-apps/api/core";
+
+const STORAGE_KEY = "moonlight-journal.v0.2.state";
+const DATA_DIR_KEY = "moonlight-journal.data-directory";
+let activeDataDirectory = "";
+
+const cloneInitial = (): AppState => structuredClone(initialState);
+
+const normalize = (value: Partial<AppState>): AppState => ({
+  ...cloneInitial(),
+  ...value,
+  birthdays: value.birthdays || [],
+  holidays: value.holidays || cloneInitial().holidays,
+  albums: value.albums || cloneInitial().albums,
+  photos: (value.photos || []).map((photo) => ({
+    ...photo,
+    mediaType: photo.mediaType || "image",
+  })),
+  settings: {
+    ...cloneInitial().settings,
+    ...(value.settings || {}),
+  },
+});
+async function dataDirectory() {
+  if (!window.__TAURI_INTERNALS__) return "瀏覽器預覽資料";
+  if (activeDataDirectory) return activeDataDirectory;
+  const saved = localStorage.getItem(DATA_DIR_KEY);
+  if (saved) {
+    activeDataDirectory = saved;
+    return saved;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  activeDataDirectory = await invoke<string>("default_data_directory");
+  localStorage.setItem(DATA_DIR_KEY, activeDataDirectory);
+  return activeDataDirectory;
+}
+export async function getDataDirectory() {
+  return dataDirectory();
+}
+
+export async function loadState(): Promise<AppState> {
+  try {
+    if (window.__TAURI_INTERNALS__) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const value = await invoke<string | null>("load_state", {
+        dataDir: await dataDirectory(),
+      });
+      return value ? normalize(JSON.parse(value)) : cloneInitial();
+    }
+    const value = localStorage.getItem(STORAGE_KEY);
+    return value ? normalize(JSON.parse(value)) : cloneInitial();
+  } catch (error) {
+    console.error("無法讀取月光簿資料，改用初始資料。", error);
+    return cloneInitial();
+  }
+}
+
+export async function saveState(state: AppState): Promise<void> {
+  const value = JSON.stringify(state);
+  if (window.__TAURI_INTERNALS__) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("save_state", {
+      dataDir: await dataDirectory(),
+      valueJson: value,
+    });
+    return;
+  }
+  localStorage.setItem(STORAGE_KEY, value);
+}
+
+export async function moveDataDirectory(path: string, state: AppState) {
+  const clean = path.trim();
+  if (!clean) throw new Error("資料夾不可空白");
+  if (window.__TAURI_INTERNALS__) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("move_data_directory", {
+      sourceDir: await dataDirectory(),
+      targetDir: clean,
+      valueJson: JSON.stringify(state),
+    });
+  }
+  activeDataDirectory = clean;
+  localStorage.setItem(DATA_DIR_KEY, clean);
+}
+
+export async function storeMedia(
+  id: string,
+  file: File,
+  previewDataUrl: string,
+) {
+  if (!window.__TAURI_INTERNALS__) {
+    return {
+      dataUrl: previewDataUrl,
+      originalDataUrl: await fileToDataUrl(file),
+    };
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<{ originalPath: string; previewPath: string }>("store_media", {
+    dataDir: await dataDirectory(),
+    mediaId: id,
+    originalName: file.name,
+    originalBase64: await fileToBase64(file),
+    previewBase64: previewDataUrl.split(",", 2)[1] || "",
+  });
+}
+
+export async function removeMediaFiles(photo: {
+  originalPath?: string;
+  previewPath?: string;
+}) {
+  if (!window.__TAURI_INTERNALS__) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("remove_media", {
+    dataDir: await dataDirectory(),
+    originalPath: photo.originalPath || "",
+    previewPath: photo.previewPath || "",
+  });
+}
+
+export async function loadMediaBlob(photo: {
+  dataUrl?: string;
+  originalPath?: string;
+  mimeType?: string;
+}) {
+  if (!window.__TAURI_INTERNALS__) {
+    if (!photo.dataUrl) throw new Error("找不到影片資料");
+    return fetch(photo.dataUrl).then((response) => response.blob());
+  }
+  if (!photo.originalPath) throw new Error("找不到影片原始檔");
+  const { invoke } = await import("@tauri-apps/api/core");
+  const bytes = await invoke<ArrayBuffer>("load_media", {
+    dataDir: await dataDirectory(),
+    relativePath: photo.originalPath,
+  });
+  return new Blob([bytes], { type: photo.mimeType || "video/mp4" });
+}
+
+export function mediaSource(
+  photo: { dataUrl?: string; originalPath?: string; previewPath?: string },
+  dataDir: string,
+  original = false,
+) {
+  const path = original ? photo.originalPath : photo.previewPath;
+  if (window.__TAURI_INTERNALS__ && path) {
+    const normalized = `${dataDir.replace(/[\\/]$/, "")}/${path.replaceAll("\\", "/")}`;
+    return convertFileSrc(normalized);
+  }
+  return original
+    ? photo.dataUrl || ""
+    : (photo as { previewDataUrl?: string }).previewDataUrl ||
+        photo.dataUrl ||
+        "";
+}
+
+const fileToBase64 = async (file: Blob) =>
+  (await fileToDataUrl(file)).split(",", 2)[1] || "";
+
+const fileToDataUrl = (file: Blob) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () =>
+      reject(reader.error || new Error("無法讀取媒體檔案"));
+    reader.readAsDataURL(file);
+  });
+
+export async function exportState(state: AppState): Promise<void> {
+  const blob = new Blob([JSON.stringify(state, null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `月光簿備份-${new Date().toISOString().slice(0, 10)}.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+export async function createFullBackup(
+  state: AppState,
+  targetDir: string,
+): Promise<string> {
+  if (!window.__TAURI_INTERNALS__) throw new Error("完整備份只能在桌面版使用");
+  await saveState(state);
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string>("create_full_backup", {
+    dataDir: await dataDirectory(),
+    targetDir: targetDir.trim(),
+    manifestJson: JSON.stringify({
+      app: "moonlight-journal",
+      version: 1,
+      createdAt: new Date().toISOString(),
+    }),
+  });
+}
+
+export async function restoreFullBackup(backupDir: string): Promise<string> {
+  if (!window.__TAURI_INTERNALS__) throw new Error("完整還原只能在桌面版使用");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string>("restore_full_backup", {
+    dataDir: await dataDirectory(),
+    backupDir: backupDir.trim(),
+  });
+}
+
+export async function setDesktopPetVisible(visible: boolean) {
+  if (!window.__TAURI_INTERNALS__) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("set_pet_visible", { visible });
+}

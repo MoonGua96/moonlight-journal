@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS app_state (
+  key TEXT PRIMARY KEY NOT NULL,
+  value_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS app_meta (
+  key TEXT PRIMARY KEY NOT NULL,
+  value TEXT NOT NULL
+);
+
+INSERT OR IGNORE INTO app_meta (key, value) VALUES ('schema_version', '1');
