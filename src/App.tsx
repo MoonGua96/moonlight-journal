@@ -29,6 +29,7 @@ import {
   type DiaryEntry,
   type Note,
   type PageName,
+  type RecurringEvent,
   type Todo,
   type TodoStatus,
 } from "./data/types";
@@ -37,6 +38,10 @@ import NoteCanvas from "./components/NoteCanvas";
 import AlbumPage from "./components/AlbumPage";
 import CalendarDataModal from "./components/CalendarDataModal";
 import VaultPage from "./components/VaultPage";
+import LedgerPage from "./components/LedgerPage";
+import RecurringEventEditor from "./components/RecurringEventEditor";
+import NotesWorkspace from "./components/NotesWorkspace";
+import TrashPageNew from "./components/TrashPage";
 
 const pageMeta: Record<PageName, [string, string]> = {
   today: [
@@ -53,6 +58,7 @@ const pageMeta: Record<PageName, [string, string]> = {
   diary: ["日記", "今天想留下什麼"],
   notes: ["筆記", "把學習與經驗慢慢累積"],
   albums: ["相簿", "把值得記住的光收進來"],
+  ledger: ["記帳", "偶爾記一筆，也能看見生活的流向"],
   vault: ["密碼保管庫", "只在解鎖時顯示的秘密"],
   inbox: ["收集箱", "還沒分類也沒關係"],
   trash: ["回收桶", "後悔時還有回頭路"],
@@ -66,6 +72,7 @@ const nav: Array<[PageName, string, string]> = [
   ["diary", "✎", "日記"],
   ["notes", "▤", "筆記"],
   ["albums", "▧", "相簿"],
+  ["ledger", "$", "記帳"],
   ["vault", "🔐", "密碼保管庫"],
   ["inbox", "⌑", "收集箱"],
   ["trash", "♲", "回收桶"],
@@ -326,6 +333,13 @@ function Empty({ text }: { text: string }) {
 }
 
 const colors: CalendarItem["color"][] = ["purple", "gold", "sage", "blue"];
+type CalendarDisplayItem = CalendarItem & {
+  completed?: boolean;
+  recurringId?: string;
+  occurrenceDate?: string;
+};
+const dateInRange = (date: string, start?: string, end?: string) =>
+  Boolean(start && end && date >= start && date <= end);
 function CalendarPage({
   state,
   setState,
@@ -346,22 +360,56 @@ function CalendarPage({
   } | null>(null);
   const [popover, setPopover] = useState<{ x: number; y: number } | null>(null);
   const [calendarData, setCalendarData] = useState(false);
-  const active: CalendarItem[] = [
-    ...state.calendarItems.filter((x) => !x.deletedAt && x.type === "note"),
-    ...state.todos
-      .filter((x) => !x.deletedAt && x.dueDate)
-      .map((x) => ({
-        id: x.id,
-        type: "todo" as const,
-        date: x.dueDate,
-        title: x.title,
-        time: "",
-        color: x.color,
-      })),
-  ];
-  const selectedItems = active
-    .filter((x) => x.date === selected)
-    .sort((a, b) => (a.time || "99").localeCompare(b.time || "99"));
+  const [recurringDialog, setRecurringDialog] = useState<{
+    event?: RecurringEvent;
+    occurrenceDate?: string;
+  } | null>(null);
+  const itemsForDate = (date: string): CalendarDisplayItem[] => {
+    const weekday = new Date(`${date}T12:00:00`).getDay();
+    const recurring = state.recurringEvents
+      .filter(
+        (event) =>
+          !event.deletedAt &&
+          event.weekday === weekday &&
+          dateInRange(date, event.startDate, event.endDate) &&
+          !event.exceptions.includes(date),
+      )
+      .map((event) => {
+        const override = event.overrides[date] || {};
+        return {
+          id: `recurring:${event.id}:${date}`,
+          recurringId: event.id,
+          occurrenceDate: date,
+          type: "note" as const,
+          date,
+          title: override.title || event.title,
+          time: override.startTime || event.startTime,
+          color: override.color || event.color,
+        };
+      });
+    return [
+      ...state.calendarItems.filter((x) => !x.deletedAt && x.date === date),
+      ...state.todos
+        .filter(
+          (x) =>
+            !x.deletedAt &&
+            dateInRange(date, x.startDate || x.dueDate, x.endDate || x.dueDate),
+        )
+        .map((x) => ({
+          id: x.id,
+          type: "todo" as const,
+          date,
+          title: x.title,
+          time: "",
+          color: x.color,
+          completed: x.status === "done",
+        })),
+      ...recurring,
+    ];
+  };
+  const selectedItems = itemsForDate(selected).sort((a, b) =>
+    (a.time || "99").localeCompare(b.time || "99"),
+  );
   const selectedHolidays = state.holidays.filter(
     (item) => !item.deletedAt && item.date === selected,
   );
@@ -391,7 +439,6 @@ function CalendarPage({
                     ? {
                         ...x,
                         title: item.title,
-                        dueDate: item.date,
                         color: item.color,
                       }
                     : x,
@@ -405,6 +452,8 @@ function CalendarPage({
                     status: "todo",
                     color: item.color,
                     dueDate: item.date,
+                    startDate: item.date,
+                    endDate: item.date,
                     position: s.todos.filter(
                       (x) => !x.deletedAt && x.status === "todo",
                     ).length,
@@ -473,7 +522,7 @@ function CalendarPage({
           {cells.map((c, i) => {
             const d = new Date(year, m + c.offset, c.day),
               key = dateKey(d),
-              items = active.filter((x) => x.date === key),
+              items = itemsForDate(key),
               lunar = lunarInfo(d),
               holiday = state.holidays.find(
                 (item) => !item.deletedAt && item.date === key,
@@ -517,7 +566,10 @@ function CalendarPage({
                   </small>
                 ))}
                 {items.slice(0, 2).map((x) => (
-                  <small key={x.id} className={x.color}>
+                  <small
+                    key={x.id}
+                    className={`${x.color} ${x.completed ? "calendar-todo-complete" : ""}`}
+                  >
                     {x.type === "todo" ? "✓ " : ""}
                     {x.title}
                   </small>
@@ -577,20 +629,31 @@ function CalendarPage({
                   <i className={`dot ${item.color}`}></i>
                   <button
                     className="item-text"
-                    onClick={() => setDialog({ type: item.type, item })}
+                    onClick={() =>
+                      item.recurringId
+                        ? setRecurringDialog({
+                            event: state.recurringEvents.find(
+                              (event) => event.id === item.recurringId,
+                            ),
+                            occurrenceDate: item.occurrenceDate,
+                          })
+                        : setDialog({ type: item.type, item })
+                    }
                   >
                     <small>
                       {item.type === "todo" ? "待辦" : item.time || "記事"}
                     </small>
                     <span>{item.title}</span>
                   </button>
-                  <button
-                    aria-label={`刪除 ${item.title}`}
-                    className="delete"
-                    onClick={() => remove(item)}
-                  >
-                    ×
-                  </button>
+                  {!item.recurringId && (
+                    <button
+                      aria-label={`刪除 ${item.title}`}
+                      className="delete"
+                      onClick={() => remove(item)}
+                    >
+                      ×
+                    </button>
+                  )}
                 </div>
               ))
             ) : selectedHolidays.length === 0 &&
@@ -604,6 +667,11 @@ function CalendarPage({
             </button>
             <button onClick={() => setDialog({ type: "todo" })}>
               ＋ 新增待辦
+            </button>
+            <button
+              onClick={() => setRecurringDialog({ occurrenceDate: selected })}
+            >
+              ＋ 每週固定行程
             </button>
           </div>
           <button className="diary-jump" onClick={() => openDiary(selected)}>
@@ -629,6 +697,51 @@ function CalendarPage({
           state={state}
           setState={setState}
           onClose={() => setCalendarData(false)}
+        />
+      )}
+      {recurringDialog && (
+        <RecurringEventEditor
+          value={recurringDialog.event}
+          occurrenceDate={recurringDialog.occurrenceDate || selected}
+          onClose={() => setRecurringDialog(null)}
+          onSave={(event) => {
+            setState((current) => ({
+              ...current,
+              recurringEvents: current.recurringEvents.some(
+                (item) => item.id === event.id,
+              )
+                ? current.recurringEvents.map((item) =>
+                    item.id === event.id ? event : item,
+                  )
+                : [...current.recurringEvents, event],
+            }));
+            setRecurringDialog(null);
+          }}
+          onDeleteOccurrence={(event, date) => {
+            setState((current) => ({
+              ...current,
+              recurringEvents: current.recurringEvents.map((item) =>
+                item.id === event.id
+                  ? {
+                      ...item,
+                      exceptions: [...new Set([...item.exceptions, date])],
+                    }
+                  : item,
+              ),
+            }));
+            setRecurringDialog(null);
+          }}
+          onDeleteSeries={(event) => {
+            setState((current) => ({
+              ...current,
+              recurringEvents: current.recurringEvents.map((item) =>
+                item.id === event.id
+                  ? { ...item, deletedAt: new Date().toISOString() }
+                  : item,
+              ),
+            }));
+            setRecurringDialog(null);
+          }}
         />
       )}
     </div>
@@ -854,6 +967,8 @@ function TodoPage({
                     status,
                     color: "purple",
                     dueDate: "",
+                    startDate: "",
+                    endDate: "",
                     position: 99,
                   })
                 }
@@ -881,7 +996,11 @@ function TodoPage({
                       setEditing(todo);
                     }}
                   >
-                    <small>{todo.dueDate || "沒有期限"}</small>
+                    <small>
+                      {todo.startDate
+                        ? `${todo.startDate}${todo.endDate && todo.endDate !== todo.startDate ? ` → ${todo.endDate}` : ""}`
+                        : "沒有期限"}
+                    </small>
                     <h4>{todo.title}</h4>
                     {todo.description && <p>{todo.description}</p>}
                     <footer>
@@ -939,8 +1058,13 @@ function TodoEditor({
       status: "todo",
       color: "purple",
       dueDate: "",
+      startDate: "",
+      endDate: "",
       position: 99,
     },
+  );
+  const validDates = Boolean(
+    form.startDate && form.endDate && form.startDate <= form.endDate,
   );
   return (
     <Modal
@@ -949,10 +1073,16 @@ function TodoEditor({
       onClose={onClose}
       footer={
         <>
-          <span>標題填好就能儲存</span>
+          <span>請填標題、起始日與截止日</span>
           <button
-            disabled={!form.title.trim()}
-            onClick={() => onSave({ ...form, title: form.title.trim() })}
+            disabled={!form.title.trim() || !validDates}
+            onClick={() =>
+              onSave({
+                ...form,
+                title: form.title.trim(),
+                dueDate: form.endDate || form.startDate || "",
+              })
+            }
           >
             儲存
           </button>
@@ -986,13 +1116,29 @@ function TodoEditor({
           ))}
         </select>
       </Field>
-      <Field label="期限">
-        <input
-          type="date"
-          value={form.dueDate}
-          onChange={(e) => setForm({ ...form, dueDate: e.target.value })}
-        />
-      </Field>
+      <div className="field-row">
+        <Field label="起始日">
+          <input
+            type="date"
+            value={form.startDate || form.dueDate || ""}
+            onChange={(e) =>
+              setForm({
+                ...form,
+                startDate: e.target.value,
+                endDate: form.endDate || e.target.value,
+              })
+            }
+          />
+        </Field>
+        <Field label="截止日">
+          <input
+            type="date"
+            min={form.startDate || undefined}
+            value={form.endDate || form.dueDate || ""}
+            onChange={(e) => setForm({ ...form, endDate: e.target.value })}
+          />
+        </Field>
+      </div>
       <Field label="顏色">
         <div className="color-picks">
           {colors.map((c) => (
@@ -1378,7 +1524,33 @@ function InboxPage({
   setState: StateSetter;
 }) {
   const [text, setText] = useState("");
-  const items = state.inbox.filter((x) => !x.deletedAt);
+  const [editingId, setEditingId] = useState("");
+  const inboxDrag = useRef<{
+    id: string;
+    startY: number;
+    active: boolean;
+  } | null>(null);
+  const items = state.inbox
+    .filter((x) => !x.deletedAt)
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+  const reorder = (fromId: string, toId: string) =>
+    setState((current) => {
+      const ordered = current.inbox
+        .filter((x) => !x.deletedAt)
+        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+      const from = ordered.findIndex((x) => x.id === fromId),
+        to = ordered.findIndex((x) => x.id === toId);
+      if (from < 0 || to < 0 || from === to) return current;
+      const [moved] = ordered.splice(from, 1);
+      ordered.splice(to, 0, moved);
+      return {
+        ...current,
+        inbox: current.inbox.map((x) => {
+          const position = ordered.findIndex((item) => item.id === x.id);
+          return position < 0 ? x : { ...x, position };
+        }),
+      };
+    });
   const remove = (id: string) =>
     setState((s) => ({
       ...s,
@@ -1460,8 +1632,12 @@ function InboxPage({
                 id: makeId("inbox"),
                 text: text.trim(),
                 createdAt: new Date().toISOString(),
+                position: 0,
               },
-              ...s.inbox,
+              ...s.inbox.map((item) => ({
+                ...item,
+                position: (item.position ?? 0) + 1,
+              })),
             ],
           }));
           setText("");
@@ -1476,13 +1652,64 @@ function InboxPage({
       </form>
       <div className="inbox-items">
         {items.map((x) => (
-          <article key={x.id}>
-            <span>⌑</span>
+          <article key={x.id} data-inbox-sort={x.id}>
+            <span
+              className="sort-handle"
+              onPointerDown={(event) => {
+                event.currentTarget.setPointerCapture(event.pointerId);
+                inboxDrag.current = {
+                  id: x.id,
+                  startY: event.clientY,
+                  active: false,
+                };
+              }}
+              onPointerMove={(event) => {
+                if (!inboxDrag.current) return;
+                if (Math.abs(event.clientY - inboxDrag.current.startY) > 5)
+                  inboxDrag.current.active = true;
+              }}
+              onPointerUp={(event) => {
+                const drag = inboxDrag.current;
+                const target = document
+                  .elementFromPoint(event.clientX, event.clientY)
+                  ?.closest<HTMLElement>("[data-inbox-sort]")
+                  ?.dataset.inboxSort;
+                inboxDrag.current = null;
+                if (drag?.active && target) reorder(drag.id, target);
+              }}
+            >
+              ⋮⋮
+            </span>
             <div>
-              <strong>{x.text}</strong>
+              {editingId === x.id ? (
+                <input
+                  autoFocus
+                  value={x.text}
+                  onChange={(event) =>
+                    setState((current) => ({
+                      ...current,
+                      inbox: current.inbox.map((item) =>
+                        item.id === x.id
+                          ? { ...item, text: event.target.value }
+                          : item,
+                      ),
+                    }))
+                  }
+                  onKeyDown={(event) =>
+                    event.key === "Enter" && setEditingId("")
+                  }
+                />
+              ) : (
+                <strong>{x.text}</strong>
+              )}
               <small>{new Date(x.createdAt).toLocaleString("zh-TW")}</small>
             </div>
             <div>
+              <button
+                onClick={() => setEditingId(editingId === x.id ? "" : x.id)}
+              >
+                {editingId === x.id ? "完成" : "編輯"}
+              </button>
               <button onClick={() => convert(x.id, "todo")}>轉待辦</button>
               <button onClick={() => convert(x.id, "diary")}>轉日記</button>
               <button onClick={() => remove(x.id)}>刪除</button>
@@ -1708,6 +1935,9 @@ function SettingsPage({
           holidays: value.holidays || current.holidays,
           albums: value.albums || current.albums,
           photos: value.photos || [],
+          recurringEvents: value.recurringEvents || [],
+          ledgerEntries: value.ledgerEntries || [],
+          ledgerCategories: value.ledgerCategories || [],
           settings: { ...current.settings, ...value.settings },
         }));
     } catch {
@@ -2394,11 +2624,13 @@ export default function App() {
   }, [state]);
   const trashCount =
     state.calendarItems.filter((x) => x.deletedAt).length +
+    state.recurringEvents.filter((x) => x.deletedAt).length +
     state.todos.filter((x) => x.deletedAt).length +
     state.diaries.filter((x) => x.deletedAt).length +
     state.notes.filter((x) => x.deletedAt).length +
     state.albums.filter((x) => x.deletedAt).length +
     state.photos.filter((x) => x.deletedAt).length +
+    state.ledgerEntries.filter((x) => x.deletedAt).length +
     state.inbox.filter((x) => x.deletedAt).length;
   if (!ready)
     return (
@@ -2429,7 +2661,7 @@ export default function App() {
         initialDate={diaryDate}
       />
     ) : page === "notes" ? (
-      <NotesPage state={state} setState={setState} />
+      <NotesWorkspace state={state} setState={setState} />
     ) : page === "albums" ? (
       <AlbumPage
         state={state}
@@ -2437,12 +2669,14 @@ export default function App() {
         openDiary={openDiary}
         dataDirectory={dataDirectory}
       />
+    ) : page === "ledger" ? (
+      <LedgerPage state={state} setState={setState} />
     ) : page === "vault" ? (
       <VaultPage state={state} setState={setState} />
     ) : page === "inbox" ? (
       <InboxPage state={state} setState={setState} />
     ) : page === "trash" ? (
-      <TrashPage state={state} setState={setState} />
+      <TrashPageNew state={state} setState={setState} />
     ) : (
       <SettingsPage
         state={state}

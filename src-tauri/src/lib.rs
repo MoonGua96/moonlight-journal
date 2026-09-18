@@ -331,6 +331,9 @@ fn move_data_directory(source_dir: String, target_dir: String, value_json: Strin
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = reveal_main_window(app);
+        }))
         .manage(PetPressState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             default_data_directory,

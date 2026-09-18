@@ -10,6 +10,7 @@ import App from "../src/App";
 import PetApp from "../src/PetApp";
 import { initialState, todayKey, type AppState } from "../src/data/types";
 import { lunarInfo } from "../src/data/calendar";
+import { normalizeState } from "../src/data/repository";
 import {
   changeVaultPassword,
   emptyVault,
@@ -37,7 +38,36 @@ async function renderReady(overrides: Partial<AppState> = {}) {
   await screen.findByRole("heading", { name: "今天", level: 1 });
 }
 
-describe("月光簿 v0.5.5", () => {
+describe("月光簿 v0.6.0", () => {
+  it("舊待辦期限與舊筆記會自動轉成新版結構", () => {
+    const migrated = normalizeState({
+      todos: [
+        {
+          id: "legacy-todo",
+          title: "舊待辦",
+          description: "",
+          status: "todo",
+          color: "purple",
+          dueDate: "2026-09-20",
+          position: 0,
+        },
+      ],
+      notes: [
+        {
+          id: "legacy-note",
+          title: "舊筆記",
+          folder: "",
+          sections: [{ id: "legacy-section", title: "章節", body: "內容" }],
+          updatedAt: "2026-01-01",
+        },
+      ],
+    });
+    expect(migrated.todos[0]).toMatchObject({
+      startDate: "2026-09-20",
+      endDate: "2026-09-20",
+    });
+    expect(migrated.notes[0].tabs?.[0].sections[0].body).toBe("內容");
+  });
   it("公開版初始資料完全空白", () => {
     expect(initialState.calendarItems).toEqual([]);
     expect(initialState.todos).toEqual([]);
@@ -106,6 +136,12 @@ describe("月光簿 v0.5.5", () => {
     fireEvent.click(screen.getByRole("button", { name: "＋ 新增待辦" }));
     fireEvent.change(screen.getByLabelText("標題"), {
       target: { value: "測試新的待辦" },
+    });
+    fireEvent.change(screen.getByLabelText("起始日"), {
+      target: { value: "2026-09-18" },
+    });
+    fireEvent.change(screen.getByLabelText("截止日"), {
+      target: { value: "2026-09-20" },
     });
     fireEvent.click(screen.getByRole("button", { name: "儲存" }));
     expect(screen.getByText("測試新的待辦")).toBeInTheDocument();
@@ -382,7 +418,7 @@ describe("月光簿 v0.5.5", () => {
     expect(envelope.ciphertext).toBe(originalCiphertext);
     await expect(
       unlockVault(envelope, "moon", "correct-horse-2026"),
-    ).resolves.toEqual({ entries: [] });
+    ).resolves.toMatchObject({ entries: [], categories: expect.any(Array) });
   });
 
   it("可變更主密碼並讓舊密碼失效", async () => {

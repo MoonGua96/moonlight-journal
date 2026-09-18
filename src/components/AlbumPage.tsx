@@ -3,6 +3,7 @@ import {
   useRef,
   useState,
   type Dispatch,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type SetStateAction,
 } from "react";
@@ -108,7 +109,14 @@ export default function AlbumPage({
   openDiary: (date: string) => void;
   dataDirectory: string;
 }) {
-  const albums = state.albums.filter((x) => !x.deletedAt);
+  const albums = state.albums
+    .filter((x) => !x.deletedAt)
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+  const albumDrag = useRef<{
+    id: string;
+    startY: number;
+    active: boolean;
+  } | null>(null);
   const [albumId, setAlbumId] = useState(albums[0]?.id || "");
   const album = albums.find((x) => x.id === albumId) || albums[0];
   const [editing, setEditing] = useState<AlbumPhoto | null>(null);
@@ -175,6 +183,7 @@ export default function AlbumPage({
       title: name.trim(),
       description: "",
       createdAt: new Date().toISOString(),
+      position: albums.length,
     };
     setState((current) => ({ ...current, albums: [...current.albums, next] }));
     setAlbumId(next.id);
@@ -264,6 +273,26 @@ export default function AlbumPage({
     if (albumId === target.id)
       setAlbumId(albums.find((item) => item.id !== target.id)?.id || "");
   };
+  const finishAlbumDrag = (event: ReactPointerEvent) => {
+    const drag = albumDrag.current;
+    const target = document
+      .elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>("[data-album-sort]")?.dataset.albumSort;
+    albumDrag.current = null;
+    if (!drag?.active || !target || target === drag.id) return;
+    const ordered = [...albums];
+    const from = ordered.findIndex((item) => item.id === drag.id),
+      to = ordered.findIndex((item) => item.id === target);
+    const [moved] = ordered.splice(from, 1);
+    ordered.splice(to, 0, moved);
+    setState((current) => ({
+      ...current,
+      albums: current.albums.map((item) => {
+        const position = ordered.findIndex((entry) => entry.id === item.id);
+        return position < 0 ? item : { ...item, position };
+      }),
+    }));
+  };
 
   return (
     <div className="page album-layout">
@@ -278,7 +307,29 @@ export default function AlbumPage({
           <div
             className={`album-list-row ${item.id === album?.id ? "active" : ""}`}
             key={item.id}
+            data-album-sort={item.id}
           >
+            <span
+              className="sort-handle"
+              onPointerDown={(event) => {
+                event.currentTarget.setPointerCapture(event.pointerId);
+                albumDrag.current = {
+                  id: item.id,
+                  startY: event.clientY,
+                  active: false,
+                };
+              }}
+              onPointerMove={(event) => {
+                if (
+                  albumDrag.current &&
+                  Math.abs(event.clientY - albumDrag.current.startY) > 5
+                )
+                  albumDrag.current.active = true;
+              }}
+              onPointerUp={finishAlbumDrag}
+            >
+              ⋮⋮
+            </span>
             <button
               className="album-select"
               onClick={() => setAlbumId(item.id)}

@@ -5,6 +5,7 @@ export type PageName =
   | "diary"
   | "notes"
   | "albums"
+  | "ledger"
   | "vault"
   | "inbox"
   | "trash"
@@ -29,6 +30,8 @@ export interface Todo {
   status: TodoStatus;
   color: "purple" | "gold" | "sage" | "blue";
   dueDate: string;
+  startDate?: string;
+  endDate?: string;
   position: number;
   deletedAt?: string;
 }
@@ -53,8 +56,17 @@ export interface Note {
   title: string;
   folder: string;
   sections: NoteSection[];
+  tabs?: NoteTab[];
+  position?: number;
   updatedAt: string;
   deletedAt?: string;
+}
+
+export interface NoteTab {
+  id: string;
+  title: string;
+  sections: NoteSection[];
+  position: number;
 }
 
 export interface NoteAsset {
@@ -77,6 +89,7 @@ export interface InboxItem {
   id: string;
   text: string;
   createdAt: string;
+  position?: number;
   deletedAt?: string;
 }
 
@@ -86,7 +99,44 @@ export interface Album {
   description: string;
   createdAt: string;
   coverPhotoId?: string;
+  position?: number;
   deletedAt?: string;
+}
+
+export interface RecurringEvent {
+  id: string;
+  title: string;
+  weekday: number;
+  startTime: string;
+  endTime: string;
+  startDate: string;
+  endDate: string;
+  color: "purple" | "gold" | "sage" | "blue";
+  exceptions: string[];
+  overrides: Record<
+    string,
+    Partial<Omit<RecurringEvent, "id" | "exceptions" | "overrides">>
+  >;
+  deletedAt?: string;
+}
+
+export interface LedgerEntry {
+  id: string;
+  type: "income" | "expense";
+  amount: number;
+  date: string;
+  categoryId: string;
+  account: string;
+  note: string;
+  createdAt: string;
+  deletedAt?: string;
+}
+
+export interface LedgerCategory {
+  id: string;
+  name: string;
+  type: "income" | "expense";
+  position: number;
 }
 export interface AlbumPhoto {
   id: string;
@@ -161,6 +211,9 @@ export interface AppState {
   photos: AlbumPhoto[];
   birthdays: Birthday[];
   holidays: Holiday[];
+  recurringEvents: RecurringEvent[];
+  ledgerEntries: LedgerEntry[];
+  ledgerCategories: LedgerCategory[];
   vault?: VaultEnvelope;
   inbox: InboxItem[];
   settings: AppSettings;
@@ -181,6 +234,9 @@ export const initialState: AppState = {
   photos: [],
   birthdays: [],
   holidays: [],
+  recurringEvents: [],
+  ledgerEntries: [],
+  ledgerCategories: [],
   inbox: [],
   settings: {
     userName: "",

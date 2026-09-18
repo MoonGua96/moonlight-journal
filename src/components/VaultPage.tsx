@@ -3,6 +3,7 @@ import {
   useRef,
   useState,
   type Dispatch,
+  type DragEvent,
   type SetStateAction,
 } from "react";
 import {
@@ -17,7 +18,7 @@ import { makeId, type AppState } from "../data/types";
 
 type Setter = Dispatch<SetStateAction<AppState>>;
 
-const blankEntry = (): VaultEntry => ({
+const blankEntry = (categoryId = ""): VaultEntry => ({
   id: makeId("secret"),
   service: "",
   url: "",
@@ -25,6 +26,8 @@ const blankEntry = (): VaultEntry => ({
   password: "",
   note: "",
   tags: [],
+  categoryId,
+  position: 999,
   updatedAt: new Date().toISOString(),
 });
 
@@ -56,7 +59,11 @@ export default function VaultPage({
   const [newPassword, setNewPassword] = useState("");
   const [newPasswordAgain, setNewPasswordAgain] = useState("");
   const [passwordChangeError, setPasswordChangeError] = useState("");
+  const [categoryId, setCategoryId] = useState("all");
   const idle = useRef<number | undefined>(undefined);
+  const vaultDrag = useRef<{ kind: "category" | "entry"; id: string } | null>(
+    null,
+  );
 
   const lock = () => {
     setContents(null);
@@ -145,6 +152,44 @@ export default function VaultPage({
     );
     setContents(next);
     setState((current) => ({ ...current, vault: envelope }));
+  };
+  const dropReorder = (
+    kind: "category" | "entry",
+    targetId: string,
+    event: DragEvent,
+  ) => {
+    event.preventDefault();
+    const drag = vaultDrag.current;
+    const currentContents = contents;
+    vaultDrag.current = null;
+    if (!currentContents || !drag || drag.kind !== kind || drag.id === targetId) return;
+    if (kind === "category") {
+      const ordered = [...currentContents.categories].sort(
+        (a, b) => a.position - b.position,
+      );
+      const from = ordered.findIndex((item) => item.id === drag.id);
+      const to = ordered.findIndex((item) => item.id === targetId);
+      if (from < 0 || to < 0) return;
+      const [moved] = ordered.splice(from, 1);
+      ordered.splice(to, 0, moved);
+      void persist({
+        ...currentContents,
+        categories: ordered.map((item, position) => ({ ...item, position })),
+      });
+    } else {
+      const ordered = [...currentContents.entries].sort(
+        (a, b) => (a.position ?? 0) - (b.position ?? 0),
+      );
+      const from = ordered.findIndex((item) => item.id === drag.id);
+      const to = ordered.findIndex((item) => item.id === targetId);
+      if (from < 0 || to < 0) return;
+      const [moved] = ordered.splice(from, 1);
+      ordered.splice(to, 0, moved);
+      void persist({
+        ...currentContents,
+        entries: ordered.map((item, position) => ({ ...item, position })),
+      });
+    }
   };
 
   const copy = async (value: string, id: string) => {
@@ -281,39 +326,157 @@ export default function VaultPage({
           <button className="secondary" onClick={lock}>
             立即上鎖
           </button>
-          <button className="primary" onClick={() => setEditing(blankEntry())}>
+          <button
+            className="primary"
+            onClick={() =>
+              setEditing(
+                blankEntry(
+                  categoryId === "all"
+                    ? contents.categories[0]?.id
+                    : categoryId,
+                ),
+              )
+            }
+          >
             ＋ 新增帳密
           </button>
         </div>
+      </div>
+      <div className="vault-categories">
+        <button
+          className={categoryId === "all" ? "active" : ""}
+          onClick={() => setCategoryId("all")}
+        >
+          全部
+        </button>
+        {[...contents.categories]
+          .sort((a, b) => a.position - b.position)
+          .map((category) => (
+            <span
+              key={category.id}
+              draggable
+              onDragStart={() => {
+                vaultDrag.current = { kind: "category", id: category.id };
+              }}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => dropReorder("category", category.id, event)}
+            >
+              <button
+                className={categoryId === category.id ? "active" : ""}
+                onClick={() => setCategoryId(category.id)}
+              >
+                {category.name}
+              </button>
+              <button
+                aria-label={`重新命名 ${category.name}`}
+                onClick={() => {
+                  const name = prompt("分類名稱", category.name)?.trim();
+                  if (name)
+                    void persist({
+                      ...contents,
+                      categories: contents.categories.map((item) =>
+                        item.id === category.id ? { ...item, name } : item,
+                      ),
+                    });
+                }}
+              >
+                ✎
+              </button>
+              <button
+                aria-label={`刪除 ${category.name}`}
+                disabled={contents.categories.length === 1}
+                onClick={() => {
+                  const fallback = contents.categories.find(
+                    (item) => item.id !== category.id,
+                  );
+                  if (
+                    !fallback ||
+                    !confirm(
+                      `刪除分類「${category.name}」？裡面的帳密會移到「${fallback.name}」。`,
+                    )
+                  )
+                    return;
+                  void persist({
+                    categories: contents.categories
+                      .filter((item) => item.id !== category.id)
+                      .map((item, position) => ({ ...item, position })),
+                    entries: contents.entries.map((entry) =>
+                      entry.categoryId === category.id
+                        ? { ...entry, categoryId: fallback.id }
+                        : entry,
+                    ),
+                  });
+                  setCategoryId("all");
+                }}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        <button
+          onClick={() => {
+            const name = prompt("新增分類名稱")?.trim();
+            if (name)
+              void persist({
+                ...contents,
+                categories: [
+                  ...contents.categories,
+                  {
+                    id: makeId("vault-category"),
+                    name,
+                    position: contents.categories.length,
+                  },
+                ],
+              });
+          }}
+        >
+          ＋ 分類
+        </button>
       </div>
       <div className="vault-list">
         {!contents.entries.length && (
           <p className="empty">保管庫還是空的，先放進第一組帳密吧。</p>
         )}
-        {contents.entries.map((entry) => (
-          <article className="panel vault-card" key={entry.id}>
-            <div>
-              <small>{entry.url || "LOCAL / APP"}</small>
-              <h3>{entry.service}</h3>
-              <span>{entry.account}</span>
-            </div>
-            <div className="vault-card-actions">
-              <button
-                onClick={() => void copy(entry.account, `${entry.id}-account`)}
-              >
-                {copied === `${entry.id}-account` ? "已複製" : "複製帳號"}
-              </button>
-              <button
-                onClick={() =>
-                  void copy(entry.password, `${entry.id}-password`)
-                }
-              >
-                {copied === `${entry.id}-password` ? "已複製" : "複製密碼"}
-              </button>
-              <button onClick={() => setEditing(entry)}>編輯</button>
-            </div>
-          </article>
-        ))}
+        {[...contents.entries]
+          .filter(
+            (entry) => categoryId === "all" || entry.categoryId === categoryId,
+          )
+          .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+          .map((entry) => (
+            <article
+              className="panel vault-card"
+              key={entry.id}
+              draggable
+              onDragStart={() => {
+                vaultDrag.current = { kind: "entry", id: entry.id };
+              }}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => dropReorder("entry", entry.id, event)}
+            >
+              <div>
+                <small>{entry.url || "LOCAL / APP"}</small>
+                <h3>{entry.service}</h3>
+                <span>{entry.account}</span>
+              </div>
+              <div className="vault-card-actions">
+                <button
+                  onClick={() =>
+                    void copy(entry.account, `${entry.id}-account`)
+                  }
+                >
+                  {copied === `${entry.id}-account` ? "已複製" : "複製帳號"}
+                </button>
+                <button
+                  onClick={() =>
+                    void copy(entry.password, `${entry.id}-password`)
+                  }
+                >
+                  {copied === `${entry.id}-password` ? "已複製" : "複製密碼"}
+                </button>
+                <button onClick={() => setEditing(entry)}>編輯</button>
+              </div>
+            </article>
+          ))}
       </div>
       {editing && (
         <div
@@ -341,6 +504,23 @@ export default function VaultPage({
               </button>
             </header>
             <div className="modal-body vault-form">
+              <label>
+                <span>分類</span>
+                <select
+                  value={editing.categoryId}
+                  onChange={(e) =>
+                    setEditing({ ...editing, categoryId: e.target.value })
+                  }
+                >
+                  {[...contents.categories]
+                    .sort((a, b) => a.position - b.position)
+                    .map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.name}
+                      </option>
+                    ))}
+                </select>
+              </label>
               <label>
                 <span>軟體或網站</span>
                 <input
@@ -408,6 +588,7 @@ export default function VaultPage({
                   className="danger"
                   onClick={() => {
                     void persist({
+                      ...contents,
                       entries: contents.entries.filter(
                         (item) => item.id !== editing.id,
                       ),
@@ -431,13 +612,17 @@ export default function VaultPage({
                     updatedAt: new Date().toISOString(),
                   };
                   void persist({
+                    ...contents,
                     entries: contents.entries.some(
                       (item) => item.id === value.id,
                     )
                       ? contents.entries.map((item) =>
                           item.id === value.id ? value : item,
                         )
-                      : [...contents.entries, value],
+                      : [
+                          ...contents.entries,
+                          { ...value, position: contents.entries.length },
+                        ],
                   });
                   setEditing(null);
                 }}

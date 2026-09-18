@@ -8,21 +8,58 @@ let activeDataDirectory = "";
 
 const cloneInitial = (): AppState => structuredClone(initialState);
 
-const normalize = (value: Partial<AppState>): AppState => ({
-  ...cloneInitial(),
-  ...value,
-  birthdays: value.birthdays || [],
-  holidays: value.holidays || cloneInitial().holidays,
-  albums: value.albums || cloneInitial().albums,
-  photos: (value.photos || []).map((photo) => ({
-    ...photo,
-    mediaType: photo.mediaType || "image",
-  })),
-  settings: {
-    ...cloneInitial().settings,
-    ...(value.settings || {}),
-  },
-});
+export const normalizeState = (value: Partial<AppState>): AppState => {
+  const base = cloneInitial();
+  return {
+    ...base,
+    ...value,
+    birthdays: value.birthdays || [],
+    holidays: value.holidays || base.holidays,
+    recurringEvents: value.recurringEvents || [],
+    ledgerEntries: value.ledgerEntries || [],
+    ledgerCategories: value.ledgerCategories || [],
+    todos: (value.todos || []).map((todo) => ({
+      ...todo,
+      startDate: todo.startDate ?? todo.dueDate ?? "",
+      endDate: todo.endDate ?? todo.dueDate ?? "",
+      dueDate: todo.dueDate ?? todo.endDate ?? "",
+    })),
+    notes: (value.notes || []).map((note, index) => ({
+      ...note,
+      position: note.position ?? index,
+      tabs:
+        note.tabs && note.tabs.length
+          ? note.tabs.map((tab, tabIndex) => ({
+              ...tab,
+              position: tab.position ?? tabIndex,
+            }))
+          : [
+              {
+                id: `${note.id}-tab-legacy`,
+                title: "內容",
+                sections: note.sections || [],
+                position: 0,
+              },
+            ],
+    })),
+    albums: (value.albums || base.albums).map((album, index) => ({
+      ...album,
+      position: album.position ?? index,
+    })),
+    inbox: (value.inbox || []).map((item, index) => ({
+      ...item,
+      position: item.position ?? index,
+    })),
+    photos: (value.photos || []).map((photo) => ({
+      ...photo,
+      mediaType: photo.mediaType || "image",
+    })),
+    settings: {
+      ...base.settings,
+      ...(value.settings || {}),
+    },
+  };
+};
 async function dataDirectory() {
   if (!window.__TAURI_INTERNALS__) return "瀏覽器預覽資料";
   if (activeDataDirectory) return activeDataDirectory;
@@ -47,10 +84,10 @@ export async function loadState(): Promise<AppState> {
       const value = await invoke<string | null>("load_state", {
         dataDir: await dataDirectory(),
       });
-      return value ? normalize(JSON.parse(value)) : cloneInitial();
+      return value ? normalizeState(JSON.parse(value)) : cloneInitial();
     }
     const value = localStorage.getItem(STORAGE_KEY);
-    return value ? normalize(JSON.parse(value)) : cloneInitial();
+    return value ? normalizeState(JSON.parse(value)) : cloneInitial();
   } catch (error) {
     console.error("無法讀取月光簿資料，改用初始資料。", error);
     return cloneInitial();

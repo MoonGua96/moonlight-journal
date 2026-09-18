@@ -10,12 +10,28 @@ export interface VaultEntry {
   password: string;
   note: string;
   tags: string[];
+  categoryId?: string;
+  position?: number;
   updatedAt: string;
+}
+
+export interface VaultCategory {
+  id: string;
+  name: string;
+  position: number;
 }
 
 export interface VaultContents {
   entries: VaultEntry[];
+  categories: VaultCategory[];
 }
+
+const defaultCategories = (): VaultCategory[] =>
+  ["遊戲", "金融", "社交軟體", "其他"].map((name, position) => ({
+    id: `vault-category-${position}`,
+    name,
+    position,
+  }));
 
 const encode = (bytes: Uint8Array) => {
   let binary = "";
@@ -44,7 +60,7 @@ const deriveKey = async (password: string, salt: Uint8Array) => {
 export async function sealVault(
   username: string,
   password: string,
-  contents: VaultContents,
+  contents: VaultContents | { entries: VaultEntry[] },
   existingSalt?: string,
 ): Promise<VaultEnvelope> {
   const salt = existingSalt
@@ -84,7 +100,18 @@ export async function unlockVault(
       new TextDecoder().decode(plaintext),
     ) as VaultContents;
     if (!Array.isArray(value.entries)) throw new Error("invalid vault");
-    return value;
+    const categories =
+      Array.isArray(value.categories) && value.categories.length
+        ? value.categories
+        : defaultCategories();
+    return {
+      categories,
+      entries: value.entries.map((entry, position) => ({
+        ...entry,
+        categoryId: entry.categoryId || categories[0].id,
+        position: entry.position ?? position,
+      })),
+    };
   } catch {
     throw new Error("帳號或主密碼錯誤");
   }
@@ -103,4 +130,7 @@ export async function changeVaultPassword(
   return sealVault(envelope.username, newPassword, contents);
 }
 
-export const emptyVault = (): VaultContents => ({ entries: [] });
+export const emptyVault = (): VaultContents => ({
+  entries: [],
+  categories: defaultCategories(),
+});

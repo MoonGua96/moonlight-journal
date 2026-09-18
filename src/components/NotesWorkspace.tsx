@@ -1,0 +1,422 @@
+import {
+  useRef,
+  useState,
+  type Dispatch,
+  type PointerEvent,
+  type SetStateAction,
+} from "react";
+import {
+  makeId,
+  type AppState,
+  type Note,
+  type NoteSection,
+  type NoteTab,
+} from "../data/types";
+import NoteCanvas from "./NoteCanvas";
+
+type Setter = Dispatch<SetStateAction<AppState>>;
+type DragState = {
+  id: string;
+  startX: number;
+  startY: number;
+  active: boolean;
+} | null;
+
+const byPosition = <T extends { position?: number }>(items: T[]) =>
+  [...items].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+const tabsForNote = (note?: Note): NoteTab[] =>
+  note?.tabs?.length
+    ? byPosition(note.tabs)
+    : note
+      ? [
+          {
+            id: `${note.id}-tab-legacy`,
+            title: "內容",
+            sections: note.sections,
+            position: 0,
+          },
+        ]
+      : [];
+
+const moveById = <T extends { id: string }>(
+  items: T[],
+  fromId: string,
+  toId: string,
+) => {
+  const next = [...items];
+  const from = next.findIndex((item) => item.id === fromId);
+  const to = next.findIndex((item) => item.id === toId);
+  if (from < 0 || to < 0 || from === to) return next;
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  return next;
+};
+
+export default function NotesWorkspace({
+  state,
+  setState,
+}: {
+  state: AppState;
+  setState: Setter;
+}) {
+  const notes = byPosition(state.notes.filter((note) => !note.deletedAt));
+  const [noteId, setNoteId] = useState(notes[0]?.id || "");
+  const note = notes.find((item) => item.id === noteId) || notes[0];
+  const tabs = tabsForNote(note);
+  const [tabId, setTabId] = useState(tabs[0]?.id || "");
+  const tab = tabs.find((item) => item.id === tabId) || tabs[0];
+  const [sectionId, setSectionId] = useState(tab?.sections[0]?.id || "");
+  const section =
+    tab?.sections.find((item) => item.id === sectionId) || tab?.sections[0];
+  const noteDrag = useRef<DragState>(null);
+  const tabDrag = useRef<DragState>(null);
+
+  const updateNote = (next: Note) =>
+    setState((current) => ({
+      ...current,
+      notes: current.notes.map((item) =>
+        item.id === next.id
+          ? {
+              ...next,
+              sections: next.tabs?.[0]?.sections || next.sections,
+              updatedAt: new Date().toISOString(),
+            }
+          : item,
+      ),
+    }));
+
+  const addNote = () => {
+    const firstSection: NoteSection = {
+      id: makeId("section"),
+      title: "第一節",
+      body: "",
+      assets: [],
+    };
+    const firstTab: NoteTab = {
+      id: makeId("tab"),
+      title: "第一個主題",
+      sections: [firstSection],
+      position: 0,
+    };
+    const next: Note = {
+      id: makeId("note"),
+      title: "未命名筆記本",
+      folder: "我的筆記",
+      sections: [firstSection],
+      tabs: [firstTab],
+      position: notes.length,
+      updatedAt: new Date().toISOString(),
+    };
+    setState((current) => ({ ...current, notes: [...current.notes, next] }));
+    setNoteId(next.id);
+    setTabId(firstTab.id);
+    setSectionId(firstSection.id);
+  };
+
+  const beginDrag = (ref: typeof noteDrag, event: PointerEvent, id: string) => {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    ref.current = {
+      id,
+      startX: event.clientX,
+      startY: event.clientY,
+      active: false,
+    };
+  };
+  const moveDrag = (ref: typeof noteDrag, event: PointerEvent) => {
+    const drag = ref.current;
+    if (!drag) return;
+    if (
+      !drag.active &&
+      Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 5
+    )
+      drag.active = true;
+    if (drag.active) event.preventDefault();
+  };
+  const finishNoteDrag = (event: PointerEvent) => {
+    const drag = noteDrag.current;
+    const target = document
+      .elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>("[data-note-sort]")?.dataset.noteSort;
+    noteDrag.current = null;
+    if (!drag?.active || !target || target === drag.id) return;
+    const reordered = moveById(notes, drag.id, target);
+    setState((current) => ({
+      ...current,
+      notes: current.notes.map((item) => {
+        const position = reordered.findIndex((entry) => entry.id === item.id);
+        return position < 0 ? item : { ...item, position };
+      }),
+    }));
+  };
+  const finishTabDrag = (event: PointerEvent) => {
+    const drag = tabDrag.current;
+    const target = document
+      .elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>("[data-tab-sort]")?.dataset.tabSort;
+    tabDrag.current = null;
+    if (!note || !drag?.active || !target || target === drag.id) return;
+    updateNote({
+      ...note,
+      tabs: moveById(tabs, drag.id, target).map((item, position) => ({
+        ...item,
+        position,
+      })),
+    });
+  };
+
+  const selectNote = (next: Note) => {
+    const nextTabs = tabsForNote(next);
+    setNoteId(next.id);
+    setTabId(nextTabs[0]?.id || "");
+    setSectionId(nextTabs[0]?.sections[0]?.id || "");
+  };
+  const updateTab = (nextTab: NoteTab) =>
+    note &&
+    updateNote({
+      ...note,
+      tabs: tabs.map((item) => (item.id === nextTab.id ? nextTab : item)),
+    });
+
+  if (!note)
+    return (
+      <div className="page">
+        <p className="empty">還沒有筆記本</p>
+        <button className="primary" onClick={addNote}>
+          新增第一本筆記
+        </button>
+      </div>
+    );
+  return (
+    <div className="page notes-layout notes-workspace">
+      <aside>
+        <div className="aside-head">
+          <strong>我的筆記本</strong>
+          <button aria-label="新增筆記本" onClick={addNote}>
+            ＋
+          </button>
+        </div>
+        {notes.map((item) => (
+          <div
+            key={item.id}
+            data-note-sort={item.id}
+            className={`sortable-note ${item.id === note.id ? "active" : ""}`}
+          >
+            <button onClick={() => selectNote(item)}>
+              <strong>{item.title}</strong>
+              <small>{item.tabs?.length || 0} 個標籤</small>
+            </button>
+            <span
+              className="sort-handle"
+              title="拖曳排序"
+              onPointerDown={(event) => beginDrag(noteDrag, event, item.id)}
+              onPointerMove={(event) => moveDrag(noteDrag, event)}
+              onPointerUp={finishNoteDrag}
+              onPointerCancel={() => {
+                noteDrag.current = null;
+              }}
+            >
+              ⋮⋮
+            </span>
+          </div>
+        ))}
+      </aside>
+      <article>
+        <div className="note-meta">
+          <input
+            aria-label="筆記分類"
+            value={note.folder}
+            onChange={(event) =>
+              updateNote({ ...note, folder: event.target.value })
+            }
+          />
+          <button
+            onClick={() =>
+              setState((current) => ({
+                ...current,
+                notes: current.notes.map((item) =>
+                  item.id === note.id
+                    ? { ...item, deletedAt: new Date().toISOString() }
+                    : item,
+                ),
+              }))
+            }
+          >
+            移到回收桶
+          </button>
+        </div>
+        <input
+          aria-label="筆記本名稱"
+          className="note-title"
+          value={note.title}
+          onChange={(event) =>
+            updateNote({ ...note, title: event.target.value })
+          }
+        />
+        <div className="tabs true-tabs">
+          {tabs.map((item) => (
+            <div
+              key={item.id}
+              data-tab-sort={item.id}
+              className={`sortable-tab ${item.id === tab?.id ? "active" : ""}`}
+            >
+              <button
+                onClick={() => {
+                  setTabId(item.id);
+                  setSectionId(item.sections[0]?.id || "");
+                }}
+              >
+                {item.title}
+              </button>
+              <span
+                className="sort-handle"
+                title="拖曳排序"
+                onPointerDown={(event) => beginDrag(tabDrag, event, item.id)}
+                onPointerMove={(event) => moveDrag(tabDrag, event)}
+                onPointerUp={finishTabDrag}
+                onPointerCancel={() => {
+                  tabDrag.current = null;
+                }}
+              >
+                ⋮⋮
+              </span>
+            </div>
+          ))}
+          <button
+            aria-label="新增標籤"
+            onClick={() => {
+              const first = {
+                id: makeId("section"),
+                title: "第一節",
+                body: "",
+                assets: [],
+              };
+              const next = {
+                id: makeId("tab"),
+                title: `新標籤 ${tabs.length + 1}`,
+                sections: [first],
+                position: tabs.length,
+              };
+              updateNote({ ...note, tabs: [...tabs, next] });
+              setTabId(next.id);
+              setSectionId(first.id);
+            }}
+          >
+            ＋
+          </button>
+        </div>
+        {tab && section && (
+          <div className="note-work">
+            <aside className="toc">
+              <strong>本標籤目錄</strong>
+              {tab.sections.map((item) => (
+                <button
+                  className={item.id === section.id ? "active" : ""}
+                  key={item.id}
+                  onClick={() => setSectionId(item.id)}
+                >
+                  {item.title}
+                </button>
+              ))}
+              <button
+                aria-label="新增章節"
+                className="toc-add"
+                onClick={() => {
+                  const next = {
+                    id: makeId("section"),
+                    title: `新章節 ${tab.sections.length + 1}`,
+                    body: "",
+                    assets: [],
+                  };
+                  updateTab({ ...tab, sections: [...tab.sections, next] });
+                  setSectionId(next.id);
+                }}
+              >
+                ＋ 新增目錄章節
+              </button>
+            </aside>
+            <div>
+              <div className="section-toolbar">
+                <input
+                  aria-label="標籤名稱"
+                  value={tab.title}
+                  onChange={(event) =>
+                    updateTab({ ...tab, title: event.target.value })
+                  }
+                />
+                <button
+                  className="danger-link"
+                  disabled={tabs.length === 1}
+                  onClick={() => {
+                    const rest = tabs
+                      .filter((item) => item.id !== tab.id)
+                      .map((item, position) => ({ ...item, position }));
+                    updateNote({ ...note, tabs: rest });
+                    setTabId(rest[0]?.id || "");
+                    setSectionId(rest[0]?.sections[0]?.id || "");
+                  }}
+                >
+                  刪除標籤
+                </button>
+              </div>
+              <input
+                aria-label="章節名稱"
+                className="section-title"
+                value={section.title}
+                onChange={(event) =>
+                  updateTab({
+                    ...tab,
+                    sections: tab.sections.map((item) =>
+                      item.id === section.id
+                        ? { ...item, title: event.target.value }
+                        : item,
+                    ),
+                  })
+                }
+              />
+              <textarea
+                aria-label="章節內容"
+                value={section.body}
+                onChange={(event) =>
+                  updateTab({
+                    ...tab,
+                    sections: tab.sections.map((item) =>
+                      item.id === section.id
+                        ? { ...item, body: event.target.value }
+                        : item,
+                    ),
+                  })
+                }
+                placeholder="開始記錄你的學習與經驗……"
+              />
+              <NoteCanvas
+                assets={section.assets || []}
+                onChange={(assets) =>
+                  updateTab({
+                    ...tab,
+                    sections: tab.sections.map((item) =>
+                      item.id === section.id ? { ...item, assets } : item,
+                    ),
+                  })
+                }
+              />
+              <button
+                className="danger-link"
+                disabled={tab.sections.length === 1}
+                onClick={() => {
+                  const rest = tab.sections.filter(
+                    (item) => item.id !== section.id,
+                  );
+                  updateTab({ ...tab, sections: rest });
+                  setSectionId(rest[0].id);
+                }}
+              >
+                刪除本章
+              </button>
+            </div>
+          </div>
+        )}
+      </article>
+    </div>
+  );
+}
