@@ -2,6 +2,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type Dispatch,
   type DragEvent,
   type SetStateAction,
@@ -43,12 +44,14 @@ export default function LedgerPage({
           name,
           type: "expense" as const,
           position,
+          color: "#9a647d",
         })),
         ...defaults.income.map((name, position) => ({
           id: `income-${name}`,
           name,
           type: "income" as const,
           position,
+          color: "#5e8f78",
         })),
       ];
   const entries = state.ledgerEntries
@@ -146,6 +149,7 @@ export default function LedgerPage({
         {categories.map((category) => (
           <span
             key={category.id}
+            style={{ "--category-color": category.color || "#8b72aa" } as CSSProperties}
             draggable
             onDragStart={() => {
               categoryDrag.current = category.id;
@@ -173,6 +177,26 @@ export default function LedgerPage({
             >
               {category.name}
             </button>
+            <label className="category-color" title="調整分類顏色">
+              <input
+                aria-label={`${category.name}顏色`}
+                type="color"
+                value={category.color || "#8b72aa"}
+                onChange={(event) => {
+                  ensureCategories();
+                  const color = event.target.value;
+                  setState((current) => ({
+                    ...current,
+                    ledgerCategories: (current.ledgerCategories.length
+                      ? current.ledgerCategories
+                      : categories
+                    ).map((item) =>
+                      item.id === category.id ? { ...item, color } : item,
+                    ),
+                  }));
+                }}
+              />
+            </label>
             <button
               aria-label={`刪除 ${category.name}`}
               onClick={() => {
@@ -217,6 +241,7 @@ export default function LedgerPage({
                     name,
                     type: "expense",
                     position: categories.length,
+                    color: "#9a647d",
                   },
                 ],
               }));
@@ -237,6 +262,7 @@ export default function LedgerPage({
                     name,
                     type: "income",
                     position: categories.length,
+                    color: "#5e8f78",
                   },
                 ],
               }));

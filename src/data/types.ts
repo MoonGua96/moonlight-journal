@@ -55,11 +55,31 @@ export interface Note {
   id: string;
   title: string;
   folder: string;
+  folderId?: string;
   sections: NoteSection[];
   tabs?: NoteTab[];
   position?: number;
   updatedAt: string;
   deletedAt?: string;
+}
+
+export interface NoteFolder {
+  id: string;
+  name: string;
+  position: number;
+}
+
+export type NoteBlockType = "paragraph" | "heading" | "bulletList" | "numberList" | "checkList" | "quote" | "image" | "drawing" | "table" | "divider";
+export interface NoteBlock {
+  id: string;
+  type: NoteBlockType;
+  content?: string;
+  checked?: boolean[];
+  dataUrl?: string;
+  width?: number;
+  rows?: number;
+  columns?: number;
+  cells?: string[];
 }
 
 export interface NoteTab {
@@ -83,6 +103,7 @@ export interface NoteSection {
   title: string;
   body: string;
   assets?: NoteAsset[];
+  blocks?: NoteBlock[];
 }
 
 export interface InboxItem {
@@ -137,6 +158,7 @@ export interface LedgerCategory {
   name: string;
   type: "income" | "expense";
   position: number;
+  color?: string;
 }
 export interface AlbumPhoto {
   id: string;
@@ -207,6 +229,7 @@ export interface AppState {
   todos: Todo[];
   diaries: DiaryEntry[];
   notes: Note[];
+  noteFolders: NoteFolder[];
   albums: Album[];
   photos: AlbumPhoto[];
   birthdays: Birthday[];
@@ -230,6 +253,7 @@ export const initialState: AppState = {
   todos: [],
   diaries: [],
   notes: [],
+  noteFolders: [],
   albums: [],
   photos: [],
   birthdays: [],

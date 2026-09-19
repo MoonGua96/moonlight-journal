@@ -337,6 +337,8 @@ type CalendarDisplayItem = CalendarItem & {
   completed?: boolean;
   recurringId?: string;
   occurrenceDate?: string;
+  rangeStart?: string;
+  rangeEnd?: string;
 };
 const dateInRange = (date: string, start?: string, end?: string) =>
   Boolean(start && end && date >= start && date <= end);
@@ -403,6 +405,8 @@ function CalendarPage({
           time: "",
           color: x.color,
           completed: x.status === "done",
+          rangeStart: x.startDate || x.dueDate,
+          rangeEnd: x.endDate || x.dueDate,
         })),
       ...recurring,
     ];
@@ -499,7 +503,7 @@ function CalendarPage({
         </div>
         <div className="calendar-tools">
           <button className="secondary" onClick={() => setCalendarData(true)}>
-            🎂 管理生日與假日
+            ◫ 管理生日與假日／固定行程
           </button>
           <button
             className="secondary"
@@ -565,15 +569,13 @@ function CalendarPage({
                     {birthday.calendar === "lunar" ? "☾" : "🎂"} {birthday.name}
                   </small>
                 ))}
-                {items.slice(0, 2).map((x) => (
-                  <small
-                    key={x.id}
-                    className={`${x.color} ${x.completed ? "calendar-todo-complete" : ""}`}
-                  >
-                    {x.type === "todo" ? "✓ " : ""}
-                    {x.title}
-                  </small>
-                ))}
+                {items.slice(0, 2).map((x) => {
+                  const range = x.type === "todo" && x.rangeStart && x.rangeEnd;
+                  const continuesBefore = Boolean(range && key > x.rangeStart! && d.getDay() !== 0);
+                  const continuesAfter = Boolean(range && key < x.rangeEnd! && d.getDay() !== 6);
+                  const showRangeTitle = !continuesBefore;
+                  return <small key={x.id} title={x.title} className={`${x.color} ${x.completed ? "calendar-todo-complete" : ""} ${range ? "calendar-range" : ""} ${continuesBefore ? "continues-before" : ""} ${continuesAfter ? "continues-after" : ""}`}>{x.type === "todo" && showRangeTitle ? "▰ " : ""}{range && !showRangeTitle ? "\u00a0" : x.title}</small>;
+                })}
               </button>
             );
           })}
@@ -582,7 +584,6 @@ function CalendarPage({
       {popover && (
         <div
           className="calendar-pop"
-          style={{ left: popover.x, top: popover.y }}
         >
           <header>
             <div>
@@ -668,11 +669,6 @@ function CalendarPage({
             <button onClick={() => setDialog({ type: "todo" })}>
               ＋ 新增待辦
             </button>
-            <button
-              onClick={() => setRecurringDialog({ occurrenceDate: selected })}
-            >
-              ＋ 每週固定行程
-            </button>
           </div>
           <button className="diary-jump" onClick={() => openDiary(selected)}>
             ✎ 前往這天的日記 <b>→</b>
@@ -697,6 +693,10 @@ function CalendarPage({
           state={state}
           setState={setState}
           onClose={() => setCalendarData(false)}
+          onManageRecurring={(event) => {
+            setCalendarData(false);
+            setRecurringDialog({ event, occurrenceDate: selected });
+          }}
         />
       )}
       {recurringDialog && (
@@ -1437,6 +1437,7 @@ function NotesPage({
                 title: `第 ${note.sections.length + 1} 章`,
                 body: "",
                 assets: [],
+                blocks: [{ id: makeId("block"), type: "paragraph" as const, content: "" }],
               };
               update({ ...note, sections: [...note.sections, s] });
               setSectionId(s.id);
@@ -1473,26 +1474,13 @@ function NotesPage({
                   })
                 }
               />
-              <textarea
-                aria-label="章節內容"
-                value={section.body}
-                onChange={(e) =>
-                  update({
-                    ...note,
-                    sections: note.sections.map((s) =>
-                      s.id === section.id ? { ...s, body: e.target.value } : s,
-                    ),
-                  })
-                }
-                placeholder="開始記錄你的學習與經驗……"
-              />
               <NoteCanvas
-                assets={section.assets || []}
-                onChange={(assets) =>
+                blocks={section.blocks || []}
+                onChange={(blocks) =>
                   update({
                     ...note,
                     sections: note.sections.map((s) =>
-                      s.id === section.id ? { ...s, assets } : s,
+                      s.id === section.id ? { ...s, blocks } : s,
                     ),
                   })
                 }
@@ -1682,7 +1670,8 @@ function InboxPage({
             </span>
             <div>
               {editingId === x.id ? (
-                <input
+                <textarea
+                  className="inbox-edit-area"
                   autoFocus
                   value={x.text}
                   onChange={(event) =>
@@ -1695,9 +1684,9 @@ function InboxPage({
                       ),
                     }))
                   }
-                  onKeyDown={(event) =>
-                    event.key === "Enter" && setEditingId("")
-                  }
+                  onKeyDown={(event) => {
+                    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") setEditingId("");
+                  }}
                 />
               ) : (
                 <strong>{x.text}</strong>

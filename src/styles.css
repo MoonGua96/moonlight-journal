@@ -15,6 +15,71 @@
   --ink: #2f2936;
 }
 
+/* v0.7 shared refinements */
+.ledger-categories > span { border-left: 4px solid var(--category-color); }
+.ledger-categories i { color: var(--category-color); }
+.category-color { display: grid; place-items: center; width: 24px; height: 28px; cursor: pointer; }
+.category-color input { width: 15px; height: 15px; padding: 0; border: 0; border-radius: 50%; overflow: hidden; cursor: pointer; }
+.days > button > small.purple { background: #eee8f7 !important; color: #5d4778; }
+.todo-card.purple { border-top-color: var(--purple); background: #fff !important; }
+.calendar-pop { left: 50% !important; top: 50% !important; transform: translate(-50%, -50%); width: min(720px, calc(100vw - 56px)); min-height: 470px; max-height: min(760px, calc(100vh - 56px)); display: flex; flex-direction: column; padding: 24px; }
+.calendar-pop .pop-items { flex: 1; min-height: 260px; max-height: 430px; }
+.calendar-pop .pop-items > div { padding: 13px 4px; }
+.calendar-pop .pop-add button, .calendar-pop .diary-jump { padding: 11px; }
+.days > button > small.calendar-range { position: relative; z-index: 2; min-height: 22px; display: flex; align-items: center; }
+.days > button > small.calendar-range.continues-before { margin-left: -11px; padding-left: 11px; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.days > button > small.calendar-range.continues-after { margin-right: -11px; padding-right: 11px; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.calendar-data-modal { width: min(980px, calc(100vw - 40px)); }
+.recurring-manager { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(230px, .7fr) minmax(360px, 1.3fr); gap: 24px; }
+.recurring-manager h3 { margin-top: 0; }
+.recurring-manager p { color: var(--muted); font-size: 10px; line-height: 1.7; }
+.recurring-row { flex: 1; border: 0 !important; background: transparent !important; color: inherit !important; text-align: left; }
+.inbox-edit-area { width: 100%; min-height: 140px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink); line-height: 1.7; resize: vertical; }
+.add-note-folder { width: 100%; margin: 7px 0 10px; padding: 8px; border: 1px dashed var(--line); border-radius: 8px; background: transparent; color: var(--purple); text-align: left; }
+.note-folder { display: block; margin-bottom: 9px; padding: 6px; border-radius: 10px; border: 1px solid transparent; }
+.note-folder:has(.sortable-note) { border-color: var(--line); }
+.note-folder > header, .note-folder > summary { display: flex; align-items: center; gap: 5px; padding: 5px; list-style: none; color: var(--muted); font-size: 9px; }
+.note-folder > header strong, .note-folder > summary span { flex: 1; }
+.note-folder > summary button { border: 0; background: transparent; color: var(--muted); padding: 2px 4px; }
+.note-meta select { min-width: 150px; border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; background: #fff; color: var(--ink); }
+.note-action-menu { position: relative; margin-left: auto; }
+.note-action-menu summary { list-style: none; padding: 5px 9px; border-radius: 7px; color: var(--muted); cursor: pointer; }
+.note-action-menu > div { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 175px; display: grid; padding: 5px; border: 1px solid var(--line); border-radius: 9px; background: #fff; box-shadow: 0 10px 30px #2c203b26; }
+.note-action-menu button { border: 0; background: transparent; padding: 8px; color: var(--red); text-align: left; }
+.note-action-menu button:disabled { opacity: .35; }
+.block-editor { margin-top: 12px; }
+.block-toolbar { display: flex; flex-wrap: wrap; gap: 5px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: #faf8fb; }
+.block-toolbar button, .block-toolbar label { border: 1px solid var(--line); border-radius: 7px; background: #fff; padding: 6px 8px; color: var(--ink); font-size: 8px; cursor: pointer; }
+.block-help { margin: 7px 3px 12px; color: var(--muted); font-size: 8px; }
+.note-blocks { display: grid; gap: 5px; }
+.note-block { display: grid; grid-template-columns: 32px minmax(0, 1fr); align-items: start; min-height: 48px; padding: 7px; border: 1px solid transparent; border-radius: 9px; }
+.note-block:hover { border-color: var(--line); background: #fcfafc; }
+.block-side { display: grid; place-items: center; gap: 2px; color: var(--muted); cursor: grab; }
+.block-side button { border: 0; background: transparent; color: var(--muted); opacity: 0; }
+.note-block:hover .block-side button { opacity: 1; }
+.block-text { width: 100%; min-height: 72px; padding: 8px; border: 0; background: transparent; color: var(--ink); line-height: 1.8; resize: vertical; }
+.block-heading .block-text { min-height: 42px; font-size: 20px; font-weight: 700; font-family: serif; }
+.block-quote .block-text { border-left: 3px solid var(--purple); padding-left: 15px; font-style: italic; }
+.note-block hr { width: 100%; margin: 22px 0; border: 0; border-top: 1px solid var(--line); }
+.inline-note-image { display: grid; gap: 8px; justify-items: center; }
+.inline-note-image img { max-width: 100%; max-height: 620px; object-fit: contain; border-radius: 10px; }
+.inline-note-image label, .table-size { color: var(--muted); font-size: 8px; }
+.note-table-wrap { overflow-x: auto; }
+.table-size { display: flex; gap: 10px; margin-bottom: 6px; }
+.table-size input { width: 48px; }
+.note-table { display: grid; min-width: 320px; }
+.note-table input { min-width: 0; border: 1px solid var(--line); padding: 8px; background: #fff; color: var(--ink); }
+.check-block, .structured-list { display: grid; gap: 5px; }
+.check-block label { display: grid; grid-template-columns: 22px 1fr; align-items: center; }
+.structured-list label { display: grid; grid-template-columns: 28px 1fr; align-items: center; }
+.structured-list b { color: var(--purple); text-align: center; }
+.structured-list input, .check-block label > input:last-child { border: 0; border-bottom: 1px solid var(--line); padding: 7px; background: transparent; color: var(--ink); }
+.check-block label:has(input[type="checkbox"]:checked) > input:last-child { text-decoration: line-through; color: var(--muted); }
+.check-block > button, .structured-list > button, .empty-block { border: 1px dashed var(--line); border-radius: 8px; padding: 8px; background: transparent; color: var(--purple); }
+.dark .block-toolbar, .dark .note-block:hover { background: #29242d; }
+.dark .block-toolbar button, .dark .block-toolbar label, .dark .note-table input, .dark .note-meta select { background: #332d38; color: #f4eff7; border-color: #665a6d; }
+.dark .note-action-menu > div { background: #332d38; }
+
 .ledger-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

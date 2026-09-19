@@ -17,7 +17,11 @@ export const normalizeState = (value: Partial<AppState>): AppState => {
     holidays: value.holidays || base.holidays,
     recurringEvents: value.recurringEvents || [],
     ledgerEntries: value.ledgerEntries || [],
-    ledgerCategories: value.ledgerCategories || [],
+    ledgerCategories: (value.ledgerCategories || []).map((category) => ({
+      ...category,
+      color: category.color || (category.type === "income" ? "#5e8f78" : "#9a647d"),
+    })),
+    noteFolders: value.noteFolders || [],
     todos: (value.todos || []).map((todo) => ({
       ...todo,
       startDate: todo.startDate ?? todo.dueDate ?? "",
@@ -27,17 +31,25 @@ export const normalizeState = (value: Partial<AppState>): AppState => {
     notes: (value.notes || []).map((note, index) => ({
       ...note,
       position: note.position ?? index,
+      folderId: note.folderId || undefined,
       tabs:
         note.tabs && note.tabs.length
           ? note.tabs.map((tab, tabIndex) => ({
               ...tab,
               position: tab.position ?? tabIndex,
+              sections: (tab.sections || []).map((section) => ({
+                ...section,
+                blocks: section.blocks && section.blocks.length ? section.blocks : section.body ? [{ id: `${section.id}-paragraph`, type: "paragraph" as const, content: section.body }] : [],
+              })),
             }))
           : [
               {
                 id: `${note.id}-tab-legacy`,
                 title: "內容",
-                sections: note.sections || [],
+                sections: (note.sections || []).map((section) => ({
+                  ...section,
+                  blocks: section.blocks && section.blocks.length ? section.blocks : section.body ? [{ id: `${section.id}-paragraph`, type: "paragraph" as const, content: section.body }] : [],
+                })),
                 position: 0,
               },
             ],
