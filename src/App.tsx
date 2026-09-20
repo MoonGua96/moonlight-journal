@@ -432,6 +432,38 @@ function CalendarPage({
   for (let d = 1; d <= days; d++) cells.push({ day: d, offset: 0 });
   while (cells.length < 42)
     cells.push({ day: cells.length - first - days + 1, offset: 1 });
+  const visibleDates = cells.map((cell) =>
+    dateKey(new Date(year, m + cell.offset, cell.day)),
+  );
+  const calendarRangeBars = Array.from({ length: 6 }, (_, weekIndex) => {
+    const weekDates = visibleDates.slice(weekIndex * 7, weekIndex * 7 + 7);
+    const weekStart = weekDates[0];
+    const weekEnd = weekDates[6];
+    const laneEnds: number[] = [];
+    return state.todos
+      .filter((todo) => {
+        const start = todo.startDate || todo.dueDate;
+        const end = todo.endDate || todo.dueDate;
+        return !todo.deletedAt && start && end && start < end && start <= weekEnd && end >= weekStart;
+      })
+      .map((todo) => {
+        const start = todo.startDate || todo.dueDate;
+        const end = todo.endDate || todo.dueDate;
+        const startColumn = weekDates.findIndex((date) => date >= start);
+        let endColumn = weekDates.length - 1;
+        for (let index = weekDates.length - 1; index >= 0; index--) {
+          if (weekDates[index] <= end) {
+            endColumn = index;
+            break;
+          }
+        }
+        const safeStart = startColumn < 0 ? 0 : startColumn;
+        let lane = laneEnds.findIndex((occupiedUntil) => occupiedUntil < safeStart);
+        if (lane < 0) lane = laneEnds.length;
+        laneEnds[lane] = endColumn;
+        return { todo, weekIndex, startColumn: safeStart, endColumn, lane };
+      });
+  }).flat();
   const save = (item: CalendarItem) =>
     setState((s) =>
       item.type === "todo"
@@ -539,6 +571,10 @@ function CalendarPage({
               <button
                 aria-label={key}
                 key={`${key}-${i}`}
+                style={{
+                  gridColumn: `${(i % 7) + 1}`,
+                  gridRow: `${Math.floor(i / 7) + 1}`,
+                }}
                 className={`${c.offset ? "other" : ""} ${key === todayKey ? "today" : ""} ${weekend ? "weekend" : ""} ${holiday?.type === "national" ? "holiday" : ""} ${holiday?.type === "makeup" ? "makeup-day" : ""}`}
                 onClick={(e) => {
                   const r = e.currentTarget.getBoundingClientRect();
@@ -569,16 +605,43 @@ function CalendarPage({
                     {birthday.calendar === "lunar" ? "☾" : "🎂"} {birthday.name}
                   </small>
                 ))}
-                {items.slice(0, 2).map((x) => {
-                  const range = x.type === "todo" && x.rangeStart && x.rangeEnd;
-                  const continuesBefore = Boolean(range && key > x.rangeStart! && d.getDay() !== 0);
-                  const continuesAfter = Boolean(range && key < x.rangeEnd! && d.getDay() !== 6);
-                  const showRangeTitle = !continuesBefore;
-                  return <small key={x.id} title={x.title} className={`${x.color} ${x.completed ? "calendar-todo-complete" : ""} ${range ? "calendar-range" : ""} ${continuesBefore ? "continues-before" : ""} ${continuesAfter ? "continues-after" : ""}`}>{x.type === "todo" && showRangeTitle ? "▰ " : ""}{range && !showRangeTitle ? "\u00a0" : x.title}</small>;
-                })}
+                {items
+                  .filter(
+                    (x) =>
+                      !(
+                        x.type === "todo" &&
+                        x.rangeStart &&
+                        x.rangeEnd &&
+                        x.rangeStart < x.rangeEnd
+                      ),
+                  )
+                  .slice(0, 2)
+                  .map((x) => (
+                    <small
+                      key={x.id}
+                      title={x.title}
+                      className={`${x.color} ${x.completed ? "calendar-todo-complete" : ""}`}
+                    >
+                      {x.title}
+                    </small>
+                  ))}
               </button>
             );
           })}
+          {calendarRangeBars.filter((bar) => bar.lane < 3).map(({ todo, weekIndex, startColumn, endColumn, lane }) => (
+            <div
+              key={`${todo.id}-${weekIndex}`}
+              className={`calendar-range-bar ${todo.color} ${todo.status === "done" ? "completed" : ""}`}
+              title={`${todo.title}（${todo.startDate || todo.dueDate}～${todo.endDate || todo.dueDate}）`}
+              style={{
+                gridColumn: `${startColumn + 1} / ${endColumn + 2}`,
+                gridRow: `${weekIndex + 1}`,
+                marginBottom: `${8 + lane * 24}px`,
+              }}
+            >
+              <span>{todo.title}</span>
+            </div>
+          ))}
         </div>
       </div>
       {popover && (
@@ -692,11 +755,8 @@ function CalendarPage({
         <CalendarDataModal
           state={state}
           setState={setState}
+          selectedDate={selected}
           onClose={() => setCalendarData(false)}
-          onManageRecurring={(event) => {
-            setCalendarData(false);
-            setRecurringDialog({ event, occurrenceDate: selected });
-          }}
         />
       )}
       {recurringDialog && (
@@ -2516,8 +2576,8 @@ function FloatingSpirit({
   const pointerMove = (e: ReactPointerEvent<HTMLButtonElement>) => {
     if (!drag) return;
     const x = Math.max(
-        5,
-        Math.min(innerWidth - s.moonSize, e.clientX - drag.dx),
+        8,
+        Math.min(innerWidth - s.moonSize - 8, e.clientX - drag.dx),
       ),
       y = Math.max(
         5,
@@ -2552,8 +2612,8 @@ function FloatingSpirit({
       style={{
         width: s.moonSize,
         height: s.moonSize + 18,
-        left: `${s.moonPosition.x * 100}%`,
-        top: `${s.moonPosition.y * 100}%`,
+        left: Math.max(8, Math.min(innerWidth - s.moonSize - 8, s.moonPosition.x * innerWidth)),
+        top: Math.max(8, Math.min(innerHeight - s.moonSize - 20, s.moonPosition.y * innerHeight)),
       }}
       onPointerDown={pointerDown}
       onPointerMove={pointerMove}

@@ -307,6 +307,10 @@ describe("月光簿 v0.6.0", () => {
     expect(
       screen.getByRole("button", { name: "新增章節" }),
     ).toBeInTheDocument();
+    fireEvent.contextMenu(screen.getByText(/在任一區塊按右鍵/).closest("section")!, {
+      clientX: 480,
+      clientY: 420,
+    });
     expect(screen.getByText("▧ 加入圖片")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "✎ 簡易畫筆" }));
     expect(

@@ -3,7 +3,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
-  type DragEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { makeId, type NoteBlock, type NoteBlockType } from "../data/types";
@@ -83,22 +83,36 @@ const createBlock = (type: NoteBlockType): NoteBlock => ({
 
 export default function NoteCanvas({ blocks, onChange }: Props) {
   const [drawing, setDrawing] = useState(false);
-  const dragged = useRef("");
+  const [drawingIndex, setDrawingIndex] = useState<number | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; index: number } | null>(null);
+  const blockDrag = useRef<{ id: string; startX: number; startY: number; moved: boolean; overId?: string } | null>(null);
+  const [dragView, setDragView] = useState<{ id: string; overId?: string } | null>(null);
   const update = (id: string, patch: Partial<NoteBlock>) => onChange(blocks.map((block) => (block.id === id ? { ...block, ...patch } : block)));
   const insert = (block: NoteBlock) => onChange([...blocks, block]);
-  const chooseImage = (event: ChangeEvent<HTMLInputElement>) => {
+  const insertAt = (index: number, block: NoteBlock) => {
+    const next = [...blocks];
+    next.splice(index, 0, block);
+    onChange(next);
+  };
+  const chooseImage = (event: ChangeEvent<HTMLInputElement>, index = blocks.length) => {
     const file = event.target.files?.[0];
     if (!file) return;
     if (file.size > 12 * 1024 * 1024) { alert("圖片請小於 12 MB"); return; }
     const reader = new FileReader();
-    reader.onload = () => insert({ id: makeId("block"), type: "image", dataUrl: String(reader.result), width: 70 });
+    reader.onload = () => insertAt(index, { id: makeId("block"), type: "image", dataUrl: String(reader.result), width: 70 });
     reader.readAsDataURL(file);
     event.target.value = "";
   };
-  const drop = (targetId: string, event: DragEvent) => {
-    event.preventDefault();
-    const fromId = dragged.current;
-    dragged.current = "";
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const escape = (event: KeyboardEvent) => event.key === "Escape" && close();
+    window.addEventListener("keydown", escape);
+    return () => {
+      window.removeEventListener("keydown", escape);
+    };
+  }, [menu]);
+  const reorderBlock = (fromId: string, targetId: string) => {
     if (!fromId || fromId === targetId) return;
     const next = [...blocks];
     const from = next.findIndex((item) => item.id === fromId), to = next.findIndex((item) => item.id === targetId);
@@ -107,24 +121,64 @@ export default function NoteCanvas({ blocks, onChange }: Props) {
     next.splice(to, 0, moved);
     onChange(next);
   };
+  const startBlockDrag = (id: string, event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    blockDrag.current = { id, startX: event.clientX, startY: event.clientY, moved: false };
+    setDragView({ id });
+  };
+  const moveBlockDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const current = blockDrag.current;
+    if (!current) return;
+    event.preventDefault();
+    const target = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
+    const overId = target?.closest<HTMLElement>("[data-block-sort]")?.dataset.blockSort;
+    const next = { ...current, moved: current.moved || Math.hypot(event.clientX - current.startX, event.clientY - current.startY) > 4, overId };
+    blockDrag.current = next;
+    setDragView({ id: next.id, overId });
+  };
+  const endBlockDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const current = blockDrag.current;
+    if (!current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (current.moved && current.overId) reorderBlock(current.id, current.overId);
+    blockDrag.current = null;
+    setDragView(null);
+  };
+  const openInsertMenu = (event: ReactMouseEvent<HTMLElement>, index: number) => {
+    event.preventDefault();
+    setMenu({ x: Math.min(event.clientX, innerWidth - 230), y: Math.min(event.clientY, innerHeight - 360), index });
+  };
   return (
-    <section className="block-editor">
-      <div className="block-toolbar">
-        {labels.map(([type, label]) => <button key={type} type="button" onClick={() => insert(createBlock(type))}>＋ {label}</button>)}
-        <label>▧ 加入圖片<input hidden type="file" accept="image/*" onChange={chooseImage} /></label>
-        <button type="button" onClick={() => setDrawing(true)}>✎ 簡易畫筆</button>
-      </div>
-      <p className="block-help">區塊可以拖曳排序；圖片、表格與列表都能放在文字中間。</p>
+    <section className="block-editor" onContextMenu={(event) => {
+      if ((event.target as HTMLElement).closest(".note-block")) return;
+      const children = [...event.currentTarget.querySelectorAll<HTMLElement>("[data-block-sort]")];
+      const index = children.findIndex((child) => event.clientY < child.getBoundingClientRect().top + child.offsetHeight / 2);
+      openInsertMenu(event, index < 0 ? blocks.length : index);
+    }}>
+      <p className="block-help">在任一區塊按右鍵，可直接在該處插入文字、列表、圖片或表格；區塊仍可拖曳排序。</p>
       <div className="note-blocks">
-        {blocks.length === 0 && <button className="empty-block" onClick={() => insert(createBlock("paragraph"))}>＋ 從第一段文字開始</button>}
+        {blocks.length === 0 && <button className="empty-block" onClick={() => insert(createBlock("paragraph"))}>開始書寫</button>}
         {blocks.map((block) => (
-          <article key={block.id} className={`note-block block-${block.type}`} draggable onDragStart={() => (dragged.current = block.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => drop(block.id, event)}>
-            <div className="block-side"><span title="拖曳排序">⋮⋮</span><button aria-label="刪除區塊" onClick={() => onChange(blocks.filter((item) => item.id !== block.id))}>×</button></div>
+          <article data-block-sort={block.id} key={block.id} className={`note-block block-${block.type} ${dragView?.overId === block.id ? "drag-over" : ""}`} onContextMenu={(event) => openInsertMenu(event, blocks.findIndex((item) => item.id === block.id) + 1)}>
+            <div className="block-side"><button type="button" className="block-drag-handle" title="按住拖曳排序" aria-label="拖曳區塊排序" onPointerDown={(event) => startBlockDrag(block.id, event)} onPointerMove={moveBlockDrag} onPointerUp={endBlockDrag} onPointerCancel={endBlockDrag}>⋮⋮</button><button aria-label="刪除區塊" onClick={() => onChange(blocks.filter((item) => item.id !== block.id))}>×</button></div>
             <BlockContent block={block} update={(patch) => update(block.id, patch)} />
           </article>
         ))}
       </div>
-      {drawing && <DrawingPad onClose={() => setDrawing(false)} onSave={(dataUrl) => { insert({ id: makeId("block"), type: "drawing", dataUrl, width: 70 }); setDrawing(false); }} />}
+      {menu && (
+        <><button className="block-context-backdrop" aria-label="關閉插入選單" onClick={() => setMenu(null)} />
+        <div className="block-context-menu" style={{ left: menu.x, top: menu.y }} onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
+          <small>插入區塊</small>
+          {labels.map(([type, label]) => <button key={type} type="button" onClick={() => { insertAt(menu.index, createBlock(type)); setMenu(null); }}>＋ {label}</button>)}
+          <label>▧ 加入圖片<input hidden type="file" accept="image/*" onChange={(event) => { chooseImage(event, menu.index); setMenu(null); }} /></label>
+          <button type="button" onClick={() => { setDrawingIndex(menu.index); setDrawing(true); setMenu(null); }}>✎ 簡易畫筆</button>
+        </div></>
+      )}
+      {drawing && <DrawingPad onClose={() => { setDrawing(false); setDrawingIndex(null); }} onSave={(dataUrl) => { const block = { id: makeId("block"), type: "drawing" as const, dataUrl, width: 70 }; if (drawingIndex === null) insert(block); else insertAt(drawingIndex, block); setDrawing(false); setDrawingIndex(null); }} />}
     </section>
   );
 }
@@ -143,11 +197,11 @@ function BlockContent({ block, update }: { block: NoteBlock; update: (patch: Par
   }
   if (block.type === "checkList") {
     const lines = (block.content || "").split("\n"), checked = block.checked || [];
-    return <div className="check-block">{lines.map((line, index) => <label key={index}><input type="checkbox" checked={Boolean(checked[index])} onChange={(event) => { const next = [...checked]; next[index] = event.target.checked; update({ checked: next }); }} /><input value={line} placeholder="待辦項目" onChange={(event) => { const next = [...lines]; next[index] = event.target.value; update({ content: next.join("\n") }); }} /></label>)}<button onClick={() => update({ content: [...lines, ""].join("\n") })}>＋ 新增項目</button></div>;
+    return <div className="check-block">{lines.map((line, index) => <label key={index}><input type="checkbox" checked={Boolean(checked[index])} onChange={(event) => { const next = [...checked]; next[index] = event.target.checked; update({ checked: next }); }} /><input value={line} placeholder="待辦項目" onKeyDown={(event) => { if (event.key !== "Enter") return; event.preventDefault(); const next = [...lines]; next.splice(index + 1, 0, ""); const nextChecked = [...checked]; nextChecked.splice(index + 1, 0, false); update({ content: next.join("\n"), checked: nextChecked }); requestAnimationFrame(() => (event.currentTarget.parentElement?.nextElementSibling?.querySelector("input:last-child") as HTMLInputElement | null)?.focus()); }} onChange={(event) => { const next = [...lines]; next[index] = event.target.value; update({ content: next.join("\n") }); }} /></label>)}</div>;
   }
   if (block.type === "bulletList" || block.type === "numberList") {
     const lines = (block.content || "").split("\n");
-    return <div className="structured-list">{lines.map((line, index) => <label key={index}><b>{block.type === "bulletList" ? "•" : `${index + 1}.`}</b><input value={line} placeholder="列表項目" onChange={(event) => { const next = [...lines]; next[index] = event.target.value; update({ content: next.join("\n") }); }} /></label>)}<button onClick={() => update({ content: [...lines, ""].join("\n") })}>＋ 新增項目</button></div>;
+    return <div className="structured-list">{lines.map((line, index) => <label key={index}><b>{block.type === "bulletList" ? "•" : `${index + 1}.`}</b><input value={line} placeholder="列表項目" onKeyDown={(event) => { if (event.key !== "Enter") return; event.preventDefault(); const next = [...lines]; next.splice(index + 1, 0, ""); update({ content: next.join("\n") }); requestAnimationFrame(() => (event.currentTarget.parentElement?.nextElementSibling?.querySelector("input") as HTMLInputElement | null)?.focus()); }} onChange={(event) => { const next = [...lines]; next[index] = event.target.value; update({ content: next.join("\n") }); }} /></label>)}</div>;
   }
   const placeholder = block.type === "heading" ? "輸入標題" : block.type === "quote" ? "輸入引言" : "輸入文字……";
   return <textarea className="block-text" rows={block.type === "heading" ? 1 : 3} value={block.content || ""} placeholder={placeholder} onChange={(event) => update({ content: event.target.value })} />;

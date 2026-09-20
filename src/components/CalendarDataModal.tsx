@@ -6,6 +6,7 @@ import {
   type Holiday,
   type RecurringEvent,
 } from "../data/types";
+import RecurringEventEditor from "./RecurringEventEditor";
 
 type Setter = Dispatch<SetStateAction<AppState>>;
 
@@ -13,12 +14,12 @@ export default function CalendarDataModal({
   state,
   setState,
   onClose,
-  onManageRecurring,
+  selectedDate,
 }: {
   state: AppState;
   setState: Setter;
   onClose: () => void;
-  onManageRecurring: (event?: RecurringEvent) => void;
+  selectedDate: string;
 }) {
   const [tab, setTab] = useState<"birthday" | "holiday" | "recurring">(
     "birthday",
@@ -36,6 +37,9 @@ export default function CalendarDataModal({
     name: "",
     type: "national",
   });
+  const [editingRecurring, setEditingRecurring] = useState<
+    RecurringEvent | null | undefined
+  >(undefined);
   const holidays = useMemo(
     () =>
       [...state.holidays]
@@ -409,6 +413,51 @@ export default function CalendarDataModal({
                 ))}
               </div>
             </>
+          ) : editingRecurring !== undefined ? (
+            <RecurringEventEditor
+              embedded
+              value={editingRecurring || undefined}
+              occurrenceDate={selectedDate}
+              onClose={() => setEditingRecurring(undefined)}
+              onSave={(event) => {
+                setState((current) => ({
+                  ...current,
+                  recurringEvents: current.recurringEvents.some(
+                    (item) => item.id === event.id,
+                  )
+                    ? current.recurringEvents.map((item) =>
+                        item.id === event.id ? event : item,
+                      )
+                    : [...current.recurringEvents, event],
+                }));
+                setEditingRecurring(undefined);
+              }}
+              onDeleteOccurrence={(event, date) => {
+                setState((current) => ({
+                  ...current,
+                  recurringEvents: current.recurringEvents.map((item) =>
+                    item.id === event.id
+                      ? {
+                          ...item,
+                          exceptions: [...new Set([...item.exceptions, date])],
+                        }
+                      : item,
+                  ),
+                }));
+                setEditingRecurring(undefined);
+              }}
+              onDeleteSeries={(event) => {
+                setState((current) => ({
+                  ...current,
+                  recurringEvents: current.recurringEvents.map((item) =>
+                    item.id === event.id
+                      ? { ...item, deletedAt: new Date().toISOString() }
+                      : item,
+                  ),
+                }));
+                setEditingRecurring(undefined);
+              }}
+            />
           ) : (
             <div className="recurring-manager">
               <div>
@@ -416,7 +465,7 @@ export default function CalendarDataModal({
                 <p>例如每週三 18:00–19:00 運動，並可設定固定起迄日。</p>
                 <button
                   className="primary"
-                  onClick={() => onManageRecurring()}
+                  onClick={() => setEditingRecurring(null)}
                 >
                   ＋ 新增固定行程
                 </button>
@@ -429,7 +478,7 @@ export default function CalendarDataModal({
                     <article key={item.id}>
                       <button
                         className="recurring-row"
-                        onClick={() => onManageRecurring(item)}
+                        onClick={() => setEditingRecurring(item)}
                       >
                         <strong>{item.title}</strong>
                         <small>

@@ -5,10 +5,9 @@ import { loadState } from "./data/repository";
 export default function PetApp() {
   useEffect(() => {
     document.documentElement.classList.add("pet-root");
-    void loadState().then(async (state) => {
-      if (!state.settings.showDesktopPet && window.__TAURI_INTERNALS__) {
-        const { getCurrentWindow } = await import("@tauri-apps/api/window");
-        await getCurrentWindow().hide();
+    void loadState().then((state) => {
+      if (window.__TAURI_INTERNALS__) {
+        void invoke("set_pet_visible", { visible: state.settings.showDesktopPet });
       }
     });
     return () => document.documentElement.classList.remove("pet-root");

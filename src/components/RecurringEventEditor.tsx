@@ -10,6 +10,7 @@ export default function RecurringEventEditor({
   onSave,
   onDeleteOccurrence,
   onDeleteSeries,
+  embedded = false,
 }: {
   value?: RecurringEvent;
   occurrenceDate: string;
@@ -17,6 +18,7 @@ export default function RecurringEventEditor({
   onSave: (event: RecurringEvent) => void;
   onDeleteOccurrence: (event: RecurringEvent, date: string) => void;
   onDeleteSeries: (event: RecurringEvent) => void;
+  embedded?: boolean;
 }) {
   const date = new Date(`${occurrenceDate}T12:00:00`);
   const [scope, setScope] = useState<"series" | "occurrence">("series");
@@ -42,7 +44,7 @@ export default function RecurringEventEditor({
   );
   const submit = () => {
     if (!valid) return;
-    if (value && scope === "occurrence") {
+    if (value && scope === "occurrence")
       onSave({
         ...value,
         overrides: {
@@ -55,14 +57,10 @@ export default function RecurringEventEditor({
           },
         },
       });
-    } else onSave({ ...form, title: form.title.trim() });
+    else onSave({ ...form, title: form.title.trim() });
   };
-  return (
-    <div
-      className="modal-backdrop"
-      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
-    >
-      <section className="modal-card">
+  const editor = (
+      <section className={embedded ? "recurring-editor-embedded" : "modal recurring-event-modal"}>
         <header>
           <div>
             <small>WEEKLY</small>
@@ -192,6 +190,14 @@ export default function RecurringEventEditor({
           </button>
         </footer>
       </section>
+  );
+  if (embedded) return editor;
+  return (
+    <div
+      className="modal-layer"
+      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
+    >
+      {editor}
     </div>
   );
 }

@@ -2,7 +2,7 @@ import {
   useRef,
   useState,
   type Dispatch,
-  type PointerEvent,
+  type PointerEvent as ReactPointerEvent,
   type SetStateAction,
 } from "react";
 import {
@@ -15,12 +15,15 @@ import {
 import NoteCanvas from "./NoteCanvas";
 
 type Setter = Dispatch<SetStateAction<AppState>>;
-type DragState = {
+type PointerDrag = {
+  kind: "note" | "folder" | "tab";
   id: string;
   startX: number;
   startY: number;
-  active: boolean;
-} | null;
+  moved: boolean;
+  overKind?: "note" | "folder" | "tab";
+  overId?: string;
+};
 
 const byPosition = <T extends { position?: number }>(items: T[]) =>
   [...items].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
@@ -68,9 +71,8 @@ export default function NotesWorkspace({
   const [sectionId, setSectionId] = useState(tab?.sections[0]?.id || "");
   const section =
     tab?.sections.find((item) => item.id === sectionId) || tab?.sections[0];
-  const noteDrag = useRef<DragState>(null);
-  const tabDrag = useRef<DragState>(null);
-  const folderDrag = useRef("");
+  const pointerDrag = useRef<PointerDrag | null>(null);
+  const [dragView, setDragView] = useState<PointerDrag | null>(null);
   const folders = [...state.noteFolders].sort((a, b) => a.position - b.position);
 
   const updateNote = (next: Note) =>
@@ -116,52 +118,26 @@ export default function NotesWorkspace({
     setSectionId(firstSection.id);
   };
 
-  const beginDrag = (ref: typeof noteDrag, event: PointerEvent, id: string) => {
-    if (event.button !== 0) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    ref.current = {
-      id,
-      startX: event.clientX,
-      startY: event.clientY,
-      active: false,
-    };
-  };
-  const moveDrag = (ref: typeof noteDrag, event: PointerEvent) => {
-    const drag = ref.current;
-    if (!drag) return;
-    if (
-      !drag.active &&
-      Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 5
-    )
-      drag.active = true;
-    if (drag.active) event.preventDefault();
-  };
-  const finishNoteDrag = (event: PointerEvent) => {
-    const drag = noteDrag.current;
-    const target = document
-      .elementFromPoint(event.clientX, event.clientY)
-      ?.closest<HTMLElement>("[data-note-sort]")?.dataset.noteSort;
-    noteDrag.current = null;
-    if (!drag?.active || !target || target === drag.id) return;
-    const reordered = moveById(notes, drag.id, target);
+  const reorderNote = (source: string, target: Note) => {
+    if (!source || source === target.id) return;
+    const reordered = moveById(notes, source, target.id);
     setState((current) => ({
       ...current,
       notes: current.notes.map((item) => {
         const position = reordered.findIndex((entry) => entry.id === item.id);
-        return position < 0 ? item : { ...item, position };
+        return item.id === source
+          ? { ...item, folderId: target.folderId, folder: "", position }
+          : position < 0
+            ? item
+            : { ...item, position };
       }),
     }));
   };
-  const finishTabDrag = (event: PointerEvent) => {
-    const drag = tabDrag.current;
-    const target = document
-      .elementFromPoint(event.clientX, event.clientY)
-      ?.closest<HTMLElement>("[data-tab-sort]")?.dataset.tabSort;
-    tabDrag.current = null;
-    if (!note || !drag?.active || !target || target === drag.id) return;
+  const reorderTab = (source: string, targetId: string) => {
+    if (!note || !source || source === targetId) return;
     updateNote({
       ...note,
-      tabs: moveById(tabs, drag.id, target).map((item, position) => ({
+      tabs: moveById(tabs, source, targetId).map((item, position) => ({
         ...item,
         position,
       })),
@@ -187,26 +163,81 @@ export default function NotesWorkspace({
         item.id === id ? { ...item, folderId, folder: "" } : item,
       ),
     }));
+
+  const reorderFolder = (source: string, target: string) => {
+    if (!source || source === target) return;
+    const ordered = moveById(folders, source, target);
+    setState((current) => ({
+      ...current,
+      noteFolders: current.noteFolders.map((item) => {
+        const position = ordered.findIndex((entry) => entry.id === item.id);
+        return position < 0 ? item : { ...item, position };
+      }),
+    }));
+  };
+
+  const startPointerDrag = (kind: PointerDrag["kind"], id: string, event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const next = { kind, id, startX: event.clientX, startY: event.clientY, moved: false };
+    pointerDrag.current = next;
+    setDragView(next);
+  };
+  const movePointerDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const current = pointerDrag.current;
+    if (!current) return;
+    event.preventDefault();
+    const moved = current.moved || Math.hypot(event.clientX - current.startX, event.clientY - current.startY) > 4;
+    const target = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
+    const noteTarget = target?.closest<HTMLElement>("[data-note-sort]");
+    const folderTarget = target?.closest<HTMLElement>("[data-note-folder]");
+    const tabTarget = target?.closest<HTMLElement>("[data-tab-sort]");
+    const overKind: PointerDrag["overKind"] = current.kind === "note"
+      ? noteTarget ? "note" : folderTarget ? "folder" : undefined
+      : current.kind === "folder" ? folderTarget?.dataset.noteFolder ? "folder" : undefined
+        : tabTarget ? "tab" : undefined;
+    const overId = overKind === "note" ? noteTarget?.dataset.noteSort
+      : overKind === "folder" ? folderTarget?.dataset.noteFolder
+        : overKind === "tab" ? tabTarget?.dataset.tabSort : undefined;
+    const next = { ...current, moved, overKind, overId };
+    pointerDrag.current = next;
+    setDragView(next);
+  };
+  const endPointerDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const current = pointerDrag.current;
+    if (!current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (current.moved) {
+      if (current.kind === "note" && current.overKind === "note") {
+        const target = notes.find((item) => item.id === current.overId);
+        if (target) reorderNote(current.id, target);
+      } else if (current.kind === "note" && current.overKind === "folder") moveToFolder(current.id, current.overId || undefined);
+      else if (current.kind === "folder" && current.overId) reorderFolder(current.id, current.overId);
+      else if (current.kind === "tab" && current.overId) reorderTab(current.id, current.overId);
+    }
+    pointerDrag.current = null;
+    setDragView(null);
+  };
+  const pointerHandle = (kind: PointerDrag["kind"], id: string, label: string) => (
+    <button type="button" className="sort-handle" title="按住拖曳排序" aria-label={label}
+      onClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => startPointerDrag(kind, id, event)}
+      onPointerMove={movePointerDrag} onPointerUp={endPointerDrag} onPointerCancel={endPointerDrag}>⋮⋮</button>
+  );
   const noteRow = (item: Note) => (
     <div
       key={item.id}
       data-note-sort={item.id}
-      draggable
-      onDragStart={() => (folderDrag.current = item.id)}
-      className={`sortable-note ${item.id === note.id ? "active" : ""}`}
+      className={`sortable-note ${item.id === note.id ? "active" : ""} ${dragView?.overKind === "note" && dragView.overId === item.id ? "drag-over" : ""}`}
     >
       <button onClick={() => selectNote(item)}>
         <strong>{item.title}</strong>
         <small>{item.tabs?.length || 0} 個標籤</small>
       </button>
-      <span
-        className="sort-handle"
-        title="拖曳排序"
-        onPointerDown={(event) => beginDrag(noteDrag, event, item.id)}
-        onPointerMove={(event) => moveDrag(noteDrag, event)}
-        onPointerUp={finishNoteDrag}
-        onPointerCancel={() => { noteDrag.current = null; }}
-      >⋮⋮</span>
+      {pointerHandle("note", item.id, `拖曳 ${item.title} 排序`)}
     </div>
   );
 
@@ -239,15 +270,16 @@ export default function NotesWorkspace({
             }));
           }}
         >＋ 新增資料夾</button>
-        <section className="note-folder" onDragOver={(event) => event.preventDefault()} onDrop={() => { if (folderDrag.current) moveToFolder(folderDrag.current); folderDrag.current = ""; }}>
+        <section data-note-folder="" className={`note-folder ${dragView?.overKind === "folder" && dragView.overId === "" ? "drag-over" : ""}`}>
           <header><strong>未分類</strong><small>{notes.filter((item) => !item.folderId).length}</small></header>
           {notes.filter((item) => !item.folderId).map(noteRow)}
         </section>
         {folders.map((folder) => (
-          <details className="note-folder" key={folder.id} open onDragOver={(event) => event.preventDefault()} onDrop={() => { if (folderDrag.current) moveToFolder(folderDrag.current, folder.id); folderDrag.current = ""; }}>
+          <details data-note-folder={folder.id} className={`note-folder ${dragView?.overKind === "folder" && dragView.overId === folder.id ? "drag-over" : ""}`} key={folder.id} open>
             <summary>
               <span>▾ {folder.name}</span>
               <small>{notes.filter((item) => item.folderId === folder.id).length}</small>
+              {pointerHandle("folder", folder.id, `拖曳資料夾 ${folder.name} 排序`)}
               <button aria-label={`編輯資料夾 ${folder.name}`} onClick={(event) => { event.preventDefault(); const name = prompt("資料夾名稱", folder.name)?.trim(); if (name) setState((current) => ({ ...current, noteFolders: current.noteFolders.map((item) => item.id === folder.id ? { ...item, name } : item) })); }}>✎</button>
               <button aria-label={`刪除資料夾 ${folder.name}`} onClick={(event) => { event.preventDefault(); if (!confirm(`刪除「${folder.name}」資料夾？裡面的筆記會移到未分類。`)) return; setState((current) => ({ ...current, noteFolders: current.noteFolders.filter((item) => item.id !== folder.id), notes: current.notes.map((item) => item.folderId === folder.id ? { ...item, folderId: undefined } : item) })); }}>×</button>
             </summary>
@@ -256,6 +288,7 @@ export default function NotesWorkspace({
         ))}
       </aside>
       <article>
+        <div className="note-sticky-head">
         <div className="note-meta">
           <select aria-label="筆記資料夾" value={note.folderId || ""} onChange={(event) => updateNote({ ...note, folderId: event.target.value || undefined, folder: "" })}>
             <option value="">未分類</option>
@@ -281,7 +314,7 @@ export default function NotesWorkspace({
             <div
               key={item.id}
               data-tab-sort={item.id}
-              className={`sortable-tab ${item.id === tab?.id ? "active" : ""}`}
+              className={`sortable-tab ${item.id === tab?.id ? "active" : ""} ${dragView?.overKind === "tab" && dragView.overId === item.id ? "drag-over" : ""}`}
             >
               <button
                 onClick={() => {
@@ -291,18 +324,7 @@ export default function NotesWorkspace({
               >
                 {item.title}
               </button>
-              <span
-                className="sort-handle"
-                title="拖曳排序"
-                onPointerDown={(event) => beginDrag(tabDrag, event, item.id)}
-                onPointerMove={(event) => moveDrag(tabDrag, event)}
-                onPointerUp={finishTabDrag}
-                onPointerCancel={() => {
-                  tabDrag.current = null;
-                }}
-              >
-                ⋮⋮
-              </span>
+              {pointerHandle("tab", item.id, `拖曳 ${item.title} 排序`)}
             </div>
           ))}
           <button
@@ -328,6 +350,7 @@ export default function NotesWorkspace({
           >
             ＋
           </button>
+        </div>
         </div>
         {tab && section && (
           <div className="note-work">

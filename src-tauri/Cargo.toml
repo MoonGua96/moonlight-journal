@@ -1,6 +1,6 @@
 [package]
 name = "moonlight-journal"
-version = "0.7.0"
+version = "0.7.3"
 description = "Windows 本地端個人生活記錄軟體"
 authors = ["Moonlight Journal Contributors"]
 edition = "2021"
