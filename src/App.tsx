@@ -2160,8 +2160,8 @@ function SettingsPage({
       </Panel>
       <Panel title="資料與備份">
         <p className="muted">
-          正式桌面版會把記錄保存到 SQLite，照片與影片原檔放在同一資料位置的
-          media 資料夾；瀏覽器預覽使用 localStorage。
+          正式桌面版會把記錄保存到 SQLite，照片與影片原檔會依相簿放在同一資料位置的
+          media/albums 資料夾；瀏覽器預覽使用 localStorage。
         </p>
         <div className="backup-actions">
           <button className="secondary" onClick={() => exportState(state)}>
