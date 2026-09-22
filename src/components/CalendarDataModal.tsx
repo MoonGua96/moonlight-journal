@@ -10,6 +10,78 @@ import RecurringEventEditor from "./RecurringEventEditor";
 
 type Setter = Dispatch<SetStateAction<AppState>>;
 
+const parseCsvRow = (line: string) => {
+  const cells: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (char === '"' && line[index + 1] === '"' && quoted) {
+      current += '"';
+      index++;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (char === "," && !quoted) {
+      cells.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  cells.push(current.trim());
+  return cells;
+};
+
+/** Parse the government open-data calendar CSV, including its YYYYMMDD dates. */
+export const parseGovernmentCalendarCsv = (text: string): Holiday[] => {
+  const rows = text
+    .replace(/^\uFEFF/, "")
+    .split(/\r?\n/)
+    .filter((line) => line.trim());
+  if (rows.length < 2) throw new Error("invalid");
+  const headers = parseCsvRow(rows[0]).map((header) =>
+    header.replace(/^\uFEFF/, "").trim().toLowerCase(),
+  );
+  const find = (names: string[]) =>
+    headers.findIndex((header) => names.some((name) => header.includes(name)));
+  const dateIndex = find(["西元日期", "日期", "date"]);
+  const nameIndex = find(["備註", "節日", "名稱", "name", "description"]);
+  const workIndex = find(["是否放假", "放假", "work", "holiday"]);
+  if (dateIndex < 0) throw new Error("invalid");
+  const values: Holiday[] = [];
+  for (const row of rows.slice(1)) {
+    const cells = parseCsvRow(row);
+    const rawDate = (cells[dateIndex] || "").trim();
+    const separated = rawDate.match(
+      /^(\d{4})[\/.\-](\d{1,2})[\/.\-](\d{1,2})$/,
+    );
+    const compact = rawDate.match(/^(\d{4})(\d{2})(\d{2})$/);
+    const match = separated || compact;
+    if (!match) continue;
+    const date = `${match[1]}-${String(Number(match[2])).padStart(2, "0")}-${String(Number(match[3])).padStart(2, "0")}`;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    const note = nameIndex >= 0 ? (cells[nameIndex] || "").trim() : "";
+    const work = workIndex >= 0 ? (cells[workIndex] || "").trim() : "";
+    const makeup =
+      /補班|補行|調整上班|上班日|工作日|補課/.test(note) ||
+      /補班|補行|調整上班|上班/.test(work);
+    const dayOff = /^(2|1|是|放假|休假|yes|y)$/i.test(work);
+    // The government CSV includes every weekend as 是否放假=2. Weekends
+    // are already rendered by the calendar, so only named holidays and
+    // explicit makeup/workday rows should become imported records.
+    if (!note && !makeup && !dayOff) continue;
+    if (!note && dayOff) continue;
+    values.push({
+      id: makeId("holiday"),
+      date,
+      name: note || "調整上班日",
+      type: makeup ? "makeup" : "national",
+    });
+  }
+  if (!values.length) throw new Error("invalid");
+  return values;
+};
+
 export default function CalendarDataModal({
   state,
   setState,
@@ -53,57 +125,29 @@ export default function CalendarDataModal({
       : [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][birthday.month - 1] ||
         31;
 
-  const parseCsvRow = (line: string) => {
-    const cells: string[] = [];
-    let current = "";
-    let quoted = false;
-    for (let index = 0; index < line.length; index++) {
-      const char = line[index];
-      if (char === '"' && line[index + 1] === '"' && quoted) { current += '"'; index++; }
-      else if (char === '"') quoted = !quoted;
-      else if (char === "," && !quoted) { cells.push(current.trim()); current = ""; }
-      else current += char;
-    }
-    cells.push(current.trim());
-    return cells;
-  };
-  const importCsv = (text: string): Holiday[] => {
-    const rows = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim());
-    if (rows.length < 2) throw new Error("invalid");
-    const headers = parseCsvRow(rows[0]).map((header) => header.toLowerCase());
-    const find = (names: string[]) => headers.findIndex((header) => names.some((name) => header.includes(name)));
-    const dateIndex = find(["西元日期", "日期", "date"]);
-    const nameIndex = find(["備註", "節日", "名稱", "name", "description"]);
-    const workIndex = find(["是否放假", "放假", "work", "holiday"]);
-    if (dateIndex < 0) throw new Error("invalid");
-    const values: Holiday[] = [];
-    for (const row of rows.slice(1)) {
-      const cells = parseCsvRow(row);
-      const match = (cells[dateIndex] || "").match(/(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
-      if (!match) continue;
-      const date = `${match[1]}-${String(Number(match[2])).padStart(2, "0")}-${String(Number(match[3])).padStart(2, "0")}`;
-      const note = nameIndex >= 0 ? (cells[nameIndex] || "").trim() : "";
-      const work = workIndex >= 0 ? (cells[workIndex] || "").trim() : "";
-      const makeup = /補班|補行|調整上班|上班日|工作日/.test(note) || (/上班/.test(work) && !/^否$/.test(work));
-      const dayOff = /是|放假|休假/.test(work) && !/否/.test(work);
-      if (!note && !dayOff && !makeup) continue;
-      values.push({ id: makeId("holiday"), date, name: note || (makeup ? "調整上班日" : "放假"), type: makeup ? "makeup" : "national" });
-    }
-    if (!values.length) throw new Error("invalid");
-    return values;
-  };
   const importHolidays = async (file?: File) => {
     if (!file) return;
     try {
       const text = await file.text();
-      const values: Holiday[] = file.name.toLowerCase().endsWith(".csv") ? importCsv(text) : (() => {
-        const parsed = JSON.parse(text) as Array<Partial<Holiday>>;
-        if (!Array.isArray(parsed)) throw new Error("invalid");
-        return parsed.map((item) => {
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(item.date || "") || !item.name?.trim()) throw new Error("invalid");
-          return { id: item.id || makeId("holiday"), date: item.date!, name: item.name.trim(), type: item.type === "makeup" || item.type === "custom" ? item.type : "national" };
-        });
-      })();
+      const values: Holiday[] = file.name.toLowerCase().endsWith(".csv")
+        ? parseGovernmentCalendarCsv(text)
+        : (() => {
+            const parsed = JSON.parse(text) as Array<Partial<Holiday>>;
+            if (!Array.isArray(parsed)) throw new Error("invalid");
+            return parsed.map((item) => {
+              if (!/^\d{4}-\d{2}-\d{2}$/.test(item.date || "") || !item.name?.trim())
+                throw new Error("invalid");
+              return {
+                id: item.id || makeId("holiday"),
+                date: item.date!,
+                name: item.name.trim(),
+                type:
+                  item.type === "makeup" || item.type === "custom"
+                    ? item.type
+                    : "national",
+              };
+            });
+          })();
       setState((current) => ({
         ...current,
         holidays: [

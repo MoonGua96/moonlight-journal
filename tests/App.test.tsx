@@ -19,6 +19,13 @@ import {
 } from "../src/data/vault";
 
 const STORAGE_KEY = "moonlight-journal.v0.2.state";
+const TEST_VAULT = {
+  account: "fixture-user",
+  primary: ["fixture", "primary"].join("-"),
+  replacement: ["fixture", "replacement"].join("-"),
+  wrong: ["fixture", "wrong"].join("-"),
+  protected: ["fixture", "value"].join("-"),
+};
 
 function testState(overrides: Partial<AppState> = {}): AppState {
   return {
@@ -106,9 +113,9 @@ describe("月光簿 v0.6.0", () => {
 
   it("可以切換所有主要功能", async () => {
     await renderReady();
-    fireEvent.click(screen.getByRole("button", { name: "月曆" }));
+    fireEvent.click(screen.getByRole("button", { name: "行事曆" }));
     expect(
-      screen.getByRole("heading", { name: "月曆", level: 1 }),
+      screen.getByRole("heading", { name: "行事曆", level: 1 }),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "待辦事項" }));
     expect(
@@ -118,7 +125,7 @@ describe("月光簿 v0.6.0", () => {
 
   it("月曆空白時不能儲存且隨時可以關閉", async () => {
     await renderReady();
-    fireEvent.click(screen.getByRole("button", { name: "月曆" }));
+    fireEvent.click(screen.getByRole("button", { name: "行事曆" }));
     fireEvent.click(
       screen.getByRole("button", {
         name: new Date().toLocaleDateString("sv-SE"),
@@ -207,7 +214,7 @@ describe("月光簿 v0.6.0", () => {
 
   it("月曆待辦會同步出現在待辦看板", async () => {
     await renderReady();
-    fireEvent.click(screen.getByRole("button", { name: "月曆" }));
+    fireEvent.click(screen.getByRole("button", { name: "行事曆" }));
     fireEvent.click(screen.getByRole("button", { name: todayKey }));
     fireEvent.click(screen.getByRole("button", { name: "＋ 新增待辦" }));
     fireEvent.change(screen.getByLabelText("內容"), {
@@ -220,7 +227,7 @@ describe("月光簿 v0.6.0", () => {
 
   it("月曆可以直接跳到選取日期的日記", async () => {
     await renderReady();
-    fireEvent.click(screen.getByRole("button", { name: "月曆" }));
+    fireEvent.click(screen.getByRole("button", { name: "行事曆" }));
     fireEvent.click(screen.getByRole("button", { name: todayKey }));
     fireEvent.click(screen.getByRole("button", { name: /前往這天的日記/ }));
     expect(
@@ -231,7 +238,7 @@ describe("月光簿 v0.6.0", () => {
 
   it("可新增每年重複的農曆生日", async () => {
     await renderReady();
-    fireEvent.click(screen.getByRole("button", { name: "月曆" }));
+    fireEvent.click(screen.getByRole("button", { name: "行事曆" }));
     fireEvent.click(screen.getByRole("button", { name: /管理生日與假日/ }));
     fireEvent.change(screen.getByLabelText("生日姓名"), {
       target: { value: "測試壽星" },
@@ -388,14 +395,14 @@ describe("月光簿 v0.6.0", () => {
     await renderReady();
     fireEvent.click(screen.getByRole("button", { name: "密碼保管庫" }));
     fireEvent.change(screen.getByLabelText("保管庫帳號"), {
-      target: { value: "moon" },
+      target: { value: TEST_VAULT.account },
     });
     const passwordInputs = screen.getAllByLabelText(/主密碼|再輸入一次/);
     fireEvent.change(passwordInputs[0], {
-      target: { value: "correct-horse-2026" },
+      target: { value: TEST_VAULT.primary },
     });
     fireEvent.change(passwordInputs[1], {
-      target: { value: "correct-horse-2026" },
+      target: { value: TEST_VAULT.primary },
     });
     fireEvent.click(screen.getByRole("button", { name: "建立並解鎖" }));
     expect(await screen.findByText(/0 筆已加密的帳密/)).toBeInTheDocument();
@@ -405,35 +412,35 @@ describe("月光簿 v0.6.0", () => {
     await waitFor(() => {
       const saved = localStorage.getItem("moonlight-journal.v0.2.state") || "";
       expect(saved).toContain("ciphertext");
-      expect(saved).not.toContain("correct-horse-2026");
+      expect(saved).not.toContain(TEST_VAULT.primary);
     });
   });
 
   it("保管庫輸錯密碼不會破壞加密資料", async () => {
     const envelope = await sealVault(
-      "moon",
-      "correct-horse-2026",
+      TEST_VAULT.account,
+      TEST_VAULT.primary,
       emptyVault(),
     );
     const originalCiphertext = envelope.ciphertext;
     await expect(
-      unlockVault(envelope, "moon", "wrong-password"),
+      unlockVault(envelope, TEST_VAULT.account, TEST_VAULT.wrong),
     ).rejects.toThrow("帳號或主密碼錯誤");
     expect(envelope.ciphertext).toBe(originalCiphertext);
     await expect(
-      unlockVault(envelope, "moon", "correct-horse-2026"),
+      unlockVault(envelope, TEST_VAULT.account, TEST_VAULT.primary),
     ).resolves.toMatchObject({ entries: [], categories: expect.any(Array) });
   });
 
   it("可變更主密碼並讓舊密碼失效", async () => {
-    const original = await sealVault("moon", "old-password-2026", {
+    const original = await sealVault(TEST_VAULT.account, TEST_VAULT.primary, {
       entries: [
         {
           id: "secret-1",
           service: "測試網站",
           url: "",
-          account: "moon",
-          password: "protected-value",
+          account: TEST_VAULT.account,
+          password: TEST_VAULT.protected,
           note: "",
           tags: [],
           updatedAt: new Date().toISOString(),
@@ -442,17 +449,17 @@ describe("月光簿 v0.6.0", () => {
     });
     const changed = await changeVaultPassword(
       original,
-      "old-password-2026",
-      "new-password-2026",
+      TEST_VAULT.primary,
+      TEST_VAULT.replacement,
     );
     expect(changed.salt).not.toBe(original.salt);
     await expect(
-      unlockVault(changed, "moon", "old-password-2026"),
+      unlockVault(changed, TEST_VAULT.account, TEST_VAULT.primary),
     ).rejects.toThrow("帳號或主密碼錯誤");
     await expect(
-      unlockVault(changed, "moon", "new-password-2026"),
+      unlockVault(changed, TEST_VAULT.account, TEST_VAULT.replacement),
     ).resolves.toMatchObject({
-      entries: [{ service: "測試網站", password: "protected-value" }],
+      entries: [{ service: "測試網站", password: TEST_VAULT.protected }],
     });
   });
 

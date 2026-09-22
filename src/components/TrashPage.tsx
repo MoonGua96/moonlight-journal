@@ -31,7 +31,7 @@ export default function TrashPage({
         kind: "calendarItems" as const,
         id: x.id,
         title: x.title,
-        type: "月曆",
+        type: "行事曆",
       })),
     ...state.recurringEvents
       .filter((x) => x.deletedAt)

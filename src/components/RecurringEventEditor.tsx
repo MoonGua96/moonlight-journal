@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from "react";
 import { makeId, type RecurringEvent } from "../data/types";
+import { palette, paletteItem, type PaletteId } from "../data/colors";
 
-const colors: RecurringEvent["color"][] = ["purple", "gold", "sage", "blue"];
+const colors: PaletteId[] = palette.map((item) => item.id);
 
 export default function RecurringEventEditor({
   value,
@@ -31,7 +32,7 @@ export default function RecurringEventEditor({
       endTime: "19:00",
       startDate: occurrenceDate,
       endDate: occurrenceDate,
-      color: "purple",
+      color: "violet",
       exceptions: [],
       overrides: {},
     },
@@ -54,7 +55,6 @@ export default function RecurringEventEditor({
             startTime: form.startTime,
             endTime: form.endTime,
             color: form.color,
-            customColor: form.customColor,
           },
         },
       });
@@ -123,6 +123,7 @@ export default function RecurringEventEditor({
                       setForm({ ...form, startDate: event.target.value })
                     }
                   />
+                  <small className="date-format-hint">格式：yyyy-mm-dd</small>
                 </Field>
                 <Field label="結束日">
                   <input
@@ -133,6 +134,7 @@ export default function RecurringEventEditor({
                       setForm({ ...form, endDate: event.target.value })
                     }
                   />
+                  <small className="date-format-hint">格式：yyyy-mm-dd</small>
                 </Field>
               </div>
             </>
@@ -162,15 +164,14 @@ export default function RecurringEventEditor({
               {colors.map((color) => (
                 <button
                   key={color}
-                  aria-label={color}
-                  className={`${color} ${form.color === color ? "selected" : ""}`}
-                  onClick={() => setForm({ ...form, color, customColor: undefined })}
+                  type="button"
+                  aria-label={paletteItem(color).label}
+                  title={paletteItem(color).label}
+                  className={`palette-swatch ${form.color === color ? "selected" : ""}`}
+                  style={{ backgroundColor: paletteItem(color).base }}
+                  onClick={() => setForm({ ...form, color })}
                 />
               ))}
-              <label className="custom-color-pick" title="自選顏色">
-                <span style={{ backgroundColor: form.customColor || "#8b72aa" }}>自選</span>
-                <input aria-label="自選固定行程顏色" type="color" value={form.customColor || "#8b72aa"} onChange={(event) => setForm({ ...form, customColor: event.target.value })} />
-              </label>
             </div>
           </Field>
         </div>

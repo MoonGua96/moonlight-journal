@@ -4,9 +4,9 @@ import {
   useRef,
   useState,
   type Dispatch,
-  type CSSProperties,
   type FormEvent,
   type PointerEvent as ReactPointerEvent,
+  type CSSProperties,
   type ReactNode,
   type SetStateAction,
 } from "react";
@@ -35,6 +35,7 @@ import {
   type TodoStatus,
 } from "./data/types";
 import { useAppState } from "./data/useAppState";
+import { palette, paletteItem, paletteStyle, type PaletteId } from "./data/colors";
 import NoteCanvas from "./components/NoteCanvas";
 import AlbumPage from "./components/AlbumPage";
 import CalendarDataModal from "./components/CalendarDataModal";
@@ -55,7 +56,7 @@ const pageMeta: Record<PageName, [string, string]> = {
       weekday: "long",
     }).format(new Date()),
   ],
-  calendar: ["月曆", "安排與回看每一天"],
+  calendar: ["行事曆", "安排與回看每一天"],
   todo: ["待辦事項", "讓事情慢慢往前走"],
   diary: ["日記", "今天想留下什麼"],
   notes: ["筆記", "把學習與經驗慢慢累積"],
@@ -69,7 +70,7 @@ const pageMeta: Record<PageName, [string, string]> = {
 
 const nav: Array<[PageName, string, string]> = [
   ["today", "⌂", "今天"],
-  ["calendar", "▦", "月曆"],
+  ["calendar", "▦", "行事曆"],
   ["todo", "✓", "待辦事項"],
   ["diary", "✎", "日記"],
   ["notes", "▤", "筆記"],
@@ -81,6 +82,7 @@ const nav: Array<[PageName, string, string]> = [
 ];
 
 type StateSetter = Dispatch<SetStateAction<AppState>>;
+
 const dailyMoonNotes = [
   ["今天不用很厲害", "有記下一點點，就已經替未來的自己留下光了。"],
   ["慢一點也沒關係", "你正在走的路，會把今天的努力帶到未來。"],
@@ -94,19 +96,6 @@ const dayOfYear = (value: Date) => {
   const start = new Date(value.getFullYear(), 0, 1);
   return Math.floor((value.getTime() - start.getTime()) / 86400000);
 };
-const readableColor = (color: string) => {
-  const value = color.replace("#", "");
-  if (value.length !== 6) return "#fff";
-  const [r, g, b] = [0, 2, 4].map((index) => Number.parseInt(value.slice(index, index + 2), 16));
-  return (r * 299 + g * 587 + b * 114) / 1000 > 155 ? "#403247" : "#fff";
-};
-const customColorStyle = (color?: string): CSSProperties | undefined => color ? ({
-  backgroundColor: color,
-  borderColor: color,
-  color: readableColor(color),
-  "--calendar-custom-color": color,
-  "--calendar-custom-text": readableColor(color),
-} as CSSProperties) : undefined;
 const dateLabel = (date: string) =>
   new Intl.DateTimeFormat("zh-TW", {
     month: "long",
@@ -243,7 +232,6 @@ function Today({
         title: x.title,
         time: "",
         color: x.color,
-        customColor: x.customColor,
       })),
   ];
   const focus = state.todos
@@ -261,12 +249,7 @@ function Today({
       <section className="hero">
         <div>
           <small>{weekday} · 慢慢來也可以</small>
-          <h2>
-            {greeting}
-            {state.settings.userName.trim()
-              ? `，${state.settings.userName.trim()}`
-              : ""}
-          </h2>
+          <h2>{greeting}{state.settings.userName.trim() ? `，${state.settings.userName.trim()}` : ""}</h2>
           <p>今天想留下什麼？一句碎念也算數。</p>
         </div>
         <button onClick={onCapture}>寫點東西</button>
@@ -274,7 +257,7 @@ function Today({
       <div className="dashboard">
         <Panel
           title="今日安排"
-          action="看月曆 →"
+          action="看行事曆 →"
           onAction={() => setPage("calendar")}
         >
           <div className="timeline">
@@ -362,7 +345,7 @@ function Empty({ text }: { text: string }) {
   return <p className="empty">{text}</p>;
 }
 
-const colors: CalendarItem["color"][] = ["purple", "gold", "sage", "blue"];
+const colors: PaletteId[] = palette.map((item) => item.id);
 type CalendarDisplayItem = CalendarItem & {
   completed?: boolean;
   recurringId?: string;
@@ -372,6 +355,69 @@ type CalendarDisplayItem = CalendarItem & {
 };
 const dateInRange = (date: string, start?: string, end?: string) =>
   Boolean(start && end && date >= start && date <= end);
+const timeToMinutes = (value?: string) => {
+  if (!value) return 0;
+  const [hours, minutes] = value.split(":").map(Number);
+  return Number.isFinite(hours) && Number.isFinite(minutes)
+    ? Math.max(0, Math.min(24 * 60, hours * 60 + minutes))
+    : 0;
+};
+const layoutTimedItems = (items: CalendarDisplayItem[]) => {
+  const laneEnds: number[] = [];
+  const laidOut = items
+    .filter((item) => item.time)
+    .sort((a, b) => (a.time || "").localeCompare(b.time || ""))
+    .map((item) => {
+      const start = timeToMinutes(item.time);
+      const requestedEnd = item.endTime ? timeToMinutes(item.endTime) : start + 60;
+      const end = Math.max(start + 30, requestedEnd > start ? requestedEnd : start + 60);
+      let lane = laneEnds.findIndex((occupiedUntil) => occupiedUntil <= start);
+      if (lane < 0) lane = laneEnds.length;
+      laneEnds[lane] = end;
+      return { item, start, end, lane };
+    });
+  return laidOut.map((entry) => ({ ...entry, laneCount: Math.max(1, laneEnds.length) }));
+};
+const calendarTimeline = (
+  items: CalendarDisplayItem[],
+  itemClass: "calendar-view-item" | "calendar-day-item",
+  onOpen: (item: CalendarDisplayItem) => void,
+) => {
+  const laidOut = layoutTimedItems(items);
+  return (
+    <div className="calendar-timeline">
+      <div className="calendar-timeline-hours">
+        {Array.from({ length: 24 }, (_, hour) => (
+          <div className="calendar-timeline-hour" key={hour}>
+            <time>{String(hour).padStart(2, "0")}:00</time>
+            <span />
+          </div>
+        ))}
+      </div>
+      <div className="calendar-timeline-events">
+        {laidOut.map(({ item, start, end, lane, laneCount }) => (
+          <button
+            type="button"
+            className={`${itemClass} calendar-timeline-event`}
+            key={item.id}
+            style={{
+              ...paletteStyle(item.color),
+              "--event-top": `${(start / 60) * 34}px`,
+              "--event-height": `${Math.max(26, ((end - start) / 60) * 34 - 6)}px`,
+              left: `${(lane / laneCount) * 100}%`,
+              width: `calc(${100 / laneCount}% - 4px)`,
+            } as CSSProperties}
+            onClick={() => onOpen(item)}
+          >
+            <small>{item.time}{item.endTime ? `–${item.endTime}` : ""}</small>
+            <span>{item.title}</span>
+            {item.type === "todo" && <small>待辦</small>}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};
 function CalendarPage({
   state,
   setState,
@@ -386,6 +432,7 @@ function CalendarPage({
     new Date(now.getFullYear(), now.getMonth(), 1),
   );
   const [selected, setSelected] = useState(todayKey);
+  const [calendarView, setCalendarView] = useState<"month" | "week" | "day">("month");
   const [dialog, setDialog] = useState<{
     type: CalendarItemType;
     item?: CalendarItem;
@@ -416,8 +463,8 @@ function CalendarPage({
           date,
           title: override.title || event.title,
           time: override.startTime || event.startTime,
+          endTime: override.endTime || event.endTime,
           color: override.color || event.color,
-          customColor: override.customColor || event.customColor,
         };
       });
     return [
@@ -435,7 +482,6 @@ function CalendarPage({
           title: x.title,
           time: "",
           color: x.color,
-          customColor: x.customColor,
           completed: x.status === "done",
           rangeStart: x.startDate || x.dueDate,
           rangeEnd: x.endDate || x.dueDate,
@@ -496,6 +542,49 @@ function CalendarPage({
         return { todo, weekIndex, startColumn: safeStart, endColumn, lane };
       });
   }).flat();
+  const selectedDate = new Date(`${selected}T12:00:00`);
+  const weekStart = new Date(selectedDate);
+  weekStart.setDate(selectedDate.getDate() - selectedDate.getDay());
+  const weekDates = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(weekStart);
+    date.setDate(weekStart.getDate() + index);
+    return dateKey(date);
+  });
+  const weekRangeLaneEnds: number[] = [];
+  const weekRangeTodos = state.todos
+    .filter((todo) => {
+      const start = todo.startDate || todo.dueDate;
+      const end = todo.endDate || todo.dueDate;
+      return !todo.deletedAt && start && end && start < end && start <= weekDates[6] && end >= weekDates[0];
+    })
+    .map((todo) => {
+      const start = Math.max(0, weekDates.findIndex((date) => date >= (todo.startDate || todo.dueDate)));
+      const end = Math.max(0, weekDates.reduce((last, date, index) => date <= (todo.endDate || todo.dueDate) ? index : last, -1));
+      let lane = weekRangeLaneEnds.findIndex((occupiedUntil) => occupiedUntil < start);
+      if (lane < 0) lane = weekRangeLaneEnds.length;
+      weekRangeLaneEnds[lane] = end;
+      return { todo, start, end, lane };
+    });
+  const openDisplayItem = (item: CalendarDisplayItem) => {
+    if (item.recurringId) {
+      setRecurringDialog({
+        event: state.recurringEvents.find((event) => event.id === item.recurringId),
+        occurrenceDate: item.occurrenceDate,
+      });
+      return;
+    }
+    setDialog({ type: item.type, item });
+  };
+  const shiftCalendar = (direction: number) => {
+    if (calendarView === "month") {
+      setMonth(new Date(year, m + direction, 1));
+      return;
+    }
+    const next = new Date(selectedDate);
+    next.setDate(next.getDate() + direction * (calendarView === "week" ? 7 : 1));
+    setSelected(dateKey(next));
+    setMonth(new Date(next.getFullYear(), next.getMonth(), 1));
+  };
   const save = (item: CalendarItem) =>
     setState((s) =>
       item.type === "todo"
@@ -508,7 +597,6 @@ function CalendarPage({
                         ...x,
                         title: item.title,
                         color: item.color,
-                        customColor: item.customColor,
                       }
                     : x,
                 )
@@ -520,7 +608,6 @@ function CalendarPage({
                     description: "",
                     status: "todo",
                     color: item.color,
-                    customColor: item.customColor,
                     dueDate: item.date,
                     startDate: item.date,
                     endDate: item.date,
@@ -561,11 +648,23 @@ function CalendarPage({
     <div className="page calendar-page">
       <div className="page-tools">
         <div className="month-switch">
-          <button onClick={() => setMonth(new Date(year, m - 1, 1))}>‹</button>
+          <button onClick={() => shiftCalendar(-1)}>‹</button>
           <h2>
-            {year} 年 {m + 1} 月
+            {calendarView === "day" ? dateLabel(selected) : calendarView === "week" ? `${weekDates[0]} ～ ${weekDates[6]}` : `${year} 年 ${m + 1} 月`}
           </h2>
-          <button onClick={() => setMonth(new Date(year, m + 1, 1))}>›</button>
+          <button onClick={() => shiftCalendar(1)}>›</button>
+        </div>
+        <div className="calendar-view-tabs" role="tablist" aria-label="行事曆檢視方式">
+          {(["month", "week", "day"] as const).map((view) => (
+            <button
+              type="button"
+              key={view}
+              className={calendarView === view ? "active" : ""}
+              onClick={() => setCalendarView(view)}
+            >
+              {view === "month" ? "月" : view === "week" ? "週" : "日"}
+            </button>
+          ))}
         </div>
         <div className="calendar-tools">
           <button className="secondary" onClick={() => setCalendarData(true)}>
@@ -582,7 +681,7 @@ function CalendarPage({
           </button>
         </div>
       </div>
-      <div className="calendar panel">
+      {calendarView === "month" ? <div className="calendar panel">
         <div className="week">
           {["日", "一", "二", "三", "四", "五", "六"].map((x) => (
             <span key={x}>{x}</span>
@@ -655,7 +754,7 @@ function CalendarPage({
                       key={x.id}
                       title={x.title}
                       className={`${x.color} ${x.completed ? "calendar-todo-complete" : ""}`}
-                      style={customColorStyle(x.customColor)}
+                      style={paletteStyle(x.color)}
                     >
                       {x.title}
                     </small>
@@ -672,14 +771,86 @@ function CalendarPage({
                 gridColumn: `${startColumn + 1} / ${endColumn + 2}`,
                 gridRow: `${weekIndex + 1}`,
                 marginBottom: `${8 + lane * 24}px`,
-                ...customColorStyle(todo.customColor),
+                ...paletteStyle(todo.color),
               }}
             >
               <span>{todo.title}</span>
             </div>
           ))}
         </div>
-      </div>
+      </div> : calendarView === "week" ? (
+        <div className="calendar-week-view panel">
+          <div className="calendar-week-heads">
+            {weekDates.map((date) => {
+              const day = new Date(`${date}T12:00:00`);
+              return (
+                <header key={date} className={date === todayKey ? "today" : ""}>
+                  <button type="button" onClick={(event) => { setSelected(date); setPopover({ x: event.currentTarget.getBoundingClientRect().left, y: event.currentTarget.getBoundingClientRect().bottom }); }}>
+                    <b>{day.getDate()}</b><span>{["日", "一", "二", "三", "四", "五", "六"][day.getDay()]}</span>
+                  </button>
+                </header>
+              );
+            })}
+          </div>
+          <div className="calendar-week-all-day-row" style={{ "--range-lanes": weekRangeLaneEnds.length } as CSSProperties}>
+            <div className="calendar-week-all-day-cells">
+              {weekDates.map((date) => {
+                const allDay = itemsForDate(date).filter((item) => !item.time && !(item.rangeStart && item.rangeEnd && item.rangeStart < item.rangeEnd));
+                return (
+                  <div className="calendar-all-day" key={date}>
+                    <small>全天</small>
+                    {allDay.map((item) => (
+                      <button type="button" className="calendar-view-item" key={item.id} style={paletteStyle(item.color)} onClick={() => openDisplayItem(item)}>
+                        <span>{item.title}</span>
+                      </button>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="calendar-week-ranges" aria-label="連續待辦事項">
+              {weekRangeTodos.map(({ todo, start, end, lane }) => (
+                <button
+                  type="button"
+                  key={todo.id}
+                  className={`calendar-week-range ${todo.status === "done" ? "completed" : ""}`}
+                  style={{ ...paletteStyle(todo.color), gridColumn: `${start + 1} / ${end + 2}`, gridRow: `${lane + 1}` }}
+                  title={`${todo.title}（${todo.startDate || todo.dueDate}～${todo.endDate || todo.dueDate}）`}
+                  onClick={() => openDisplayItem({ id: todo.id, type: "todo", date: todo.startDate || todo.dueDate, title: todo.title, time: "", color: todo.color, rangeStart: todo.startDate || todo.dueDate, rangeEnd: todo.endDate || todo.dueDate, completed: todo.status === "done" })}
+                >
+                  {todo.title}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="calendar-week-timelines">
+            {weekDates.map((date) => (
+              <section key={date} className={date === todayKey ? "today" : ""}>
+                {calendarTimeline(itemsForDate(date), "calendar-view-item", openDisplayItem)}
+              </section>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="calendar-day-view panel">
+          <header><strong>{dateLabel(selected)}</strong><span>{selectedItems.length} 項安排</span></header>
+          <div className="calendar-day-actions">
+            <button type="button" onClick={() => setDialog({ type: "note" })}>＋ 新增記事</button>
+            <button type="button" onClick={() => setDialog({ type: "todo" })}>＋ 新增待辦</button>
+          </div>
+          <div className="calendar-all-day calendar-day-all-day">
+            <strong>全天</strong>
+            {selectedItems.filter((item) => !item.time).map((item) => (
+              <button type="button" className="calendar-day-item" key={item.id} style={paletteStyle(item.color)} onClick={() => openDisplayItem(item)}>
+                <span>{item.title}</span><small>{item.type === "todo" ? "待辦" : "記事"}</small>
+              </button>
+            ))}
+          </div>
+          <div className="calendar-day-hours">
+            {calendarTimeline(selectedItems, "calendar-day-item", openDisplayItem)}
+          </div>
+        </div>
+      )}
       {popover && (
         <div
           className="calendar-pop"
@@ -741,7 +912,7 @@ function CalendarPage({
                     }
                   >
                     <small>
-                      {item.type === "todo" ? "待辦" : item.time || "記事"}
+                      {item.type === "todo" ? "待辦" : item.time ? `${item.time}${item.endTime ? `–${item.endTime}` : ""}` : "記事"}
                     </small>
                     <span>{item.title}</span>
                   </button>
@@ -864,10 +1035,15 @@ function CalendarEditor({
       date,
       title: "",
       time: "",
-      color: type === "todo" ? "gold" : "purple",
+      endTime: "",
+      color: type === "todo" ? "amber" : "violet",
     },
   );
-  const valid = Boolean(form.date && form.title.trim());
+  const valid = Boolean(
+    form.date &&
+      form.title.trim() &&
+      (type === "todo" || (form.time && form.endTime && form.time < form.endTime)),
+  );
   return (
     <Modal
       eyebrow="CALENDAR"
@@ -890,6 +1066,7 @@ function CalendarEditor({
       <Field label="日期">
         <input
           type="date"
+          aria-label="日期"
           value={form.date}
           onChange={(e) => setForm({ ...form, date: e.target.value })}
         />
@@ -903,32 +1080,37 @@ function CalendarEditor({
         />
       </Field>
       {type === "note" && (
-        <Field label="時間">
-          <input
-            type="time"
-            value={form.time}
-            onChange={(e) => setForm({ ...form, time: e.target.value })}
-          />
-        </Field>
+        <div className="field-row">
+          <Field label="開始時間">
+            <input
+              type="time"
+              value={form.time}
+              onChange={(e) => setForm({ ...form, time: e.target.value })}
+            />
+          </Field>
+          <Field label="結束時間">
+            <input
+              type="time"
+              min={form.time || undefined}
+              value={form.endTime || ""}
+              onChange={(e) => setForm({ ...form, endTime: e.target.value })}
+            />
+          </Field>
+        </div>
       )}
       <Field label="顏色">
         <div className="color-picks">
           {colors.map((c) => (
             <button
               key={c}
-              className={`${c} ${form.color === c ? "selected" : ""}`}
-              onClick={() => setForm({ ...form, color: c, customColor: undefined })}
+              type="button"
+              aria-label={paletteItem(c).label}
+              title={paletteItem(c).label}
+              className={`palette-swatch ${form.color === c ? "selected" : ""}`}
+              style={{ backgroundColor: paletteItem(c).base }}
+              onClick={() => setForm({ ...form, color: c })}
             />
           ))}
-          <label className="custom-color-pick" title="自選顏色">
-            <span style={customColorStyle(form.customColor)}>自選</span>
-            <input
-              aria-label="自選行事曆顏色"
-              type="color"
-              value={form.customColor || (form.color === "purple" ? "#8b72aa" : form.color === "gold" ? "#c89034" : form.color === "sage" ? "#6d9c82" : "#6b8fbd")}
-              onChange={(event) => setForm({ ...form, customColor: event.target.value })}
-            />
-          </label>
         </div>
       </Field>
     </Modal>
@@ -941,6 +1123,7 @@ const columns: Array<[TodoStatus, string]> = [
   ["paused", "暫停"],
   ["done", "完成"],
 ];
+const activeColumns = columns;
 const statusName = Object.fromEntries(columns) as Record<TodoStatus, string>;
 function TodoPage({
   state,
@@ -950,6 +1133,7 @@ function TodoPage({
   setState: StateSetter;
 }) {
   const [editing, setEditing] = useState<Todo | null | undefined>(undefined);
+  const [showCompleted, setShowCompleted] = useState(false);
   const dragged = useRef(false);
   const pointerDrag = useRef<{
     id: string;
@@ -962,7 +1146,7 @@ function TodoPage({
     title: string;
     x: number;
     y: number;
-    over?: TodoStatus;
+    over?: TodoStatus | "archive";
   } | null>(null);
   const todos = state.todos.filter((x) => !x.deletedAt);
   const save = (todo: Todo) =>
@@ -980,6 +1164,7 @@ function TodoPage({
           ? {
               ...x,
               status,
+              archivedAt: undefined,
               position: s.todos.filter(
                 (t) => !t.deletedAt && t.status === status,
               ).length,
@@ -994,9 +1179,11 @@ function TodoPage({
         x.id === id ? { ...x, deletedAt: new Date().toISOString() } : x,
       ),
     }));
-  const statusAt = (x: number, y: number) =>
-    document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-todo-status]")
-      ?.dataset.todoStatus as TodoStatus | undefined;
+  const statusAt = (x: number, y: number): TodoStatus | "archive" | undefined => {
+    const element = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-todo-status], [data-todo-archive]");
+    if (element?.dataset.todoArchive) return "archive";
+    return element?.dataset.todoStatus as TodoStatus | undefined;
+  };
   const pointerDown = (e: ReactPointerEvent, todo: Todo) => {
     if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -1030,7 +1217,9 @@ function TodoPage({
     if (!current) return;
     if (current.active) {
       const status = statusAt(e.clientX, e.clientY);
-      if (status) move(current.id, status);
+      if (status === "archive") {
+        setState((state) => ({ ...state, todos: state.todos.map((todo) => todo.id === current.id ? { ...todo, status: "done", archivedAt: new Date().toISOString() } : todo) }));
+      } else if (status) move(current.id, status);
       dragged.current = true;
     }
     pointerDrag.current = null;
@@ -1051,7 +1240,7 @@ function TodoPage({
         </button>
       </div>
       <div className="kanban">
-        {columns.map(([status, label]) => (
+        {activeColumns.map(([status, label]) => (
           <section
             key={status}
             data-todo-status={status}
@@ -1059,10 +1248,10 @@ function TodoPage({
           >
             <header>
               <i
-                className={`dot ${status === "doing" ? "purple" : status === "paused" ? "gold" : status === "done" ? "sage" : "gray"}`}
+                className={`dot ${status === "doing" ? "purple" : status === "paused" ? "gold" : "gray"}`}
               ></i>
               <h3>{label}</h3>
-              <b>{todos.filter((x) => x.status === status).length}</b>
+              <b>{todos.filter((x) => x.status === status && !x.archivedAt).length}</b>
               <button
                 onClick={() =>
                   setEditing({
@@ -1070,7 +1259,7 @@ function TodoPage({
                     title: "",
                     description: "",
                     status,
-                    color: "purple",
+                    color: "violet",
                     dueDate: "",
                     startDate: "",
                     endDate: "",
@@ -1083,12 +1272,13 @@ function TodoPage({
             </header>
             <div className="todo-list">
               {todos
-                .filter((x) => x.status === status)
+                .filter((x) => x.status === status && !x.archivedAt)
                 .sort((a, b) => a.position - b.position)
                 .map((todo) => (
                   <article
                     key={todo.id}
                     className={`todo-card ${todo.color} ${status === "done" ? "completed" : ""}`}
+                    style={paletteStyle(todo.color)}
                     onPointerDown={(e) => pointerDown(e, todo)}
                     onPointerMove={pointerMove}
                     onPointerUp={pointerUp}
@@ -1110,14 +1300,10 @@ function TodoPage({
                     {todo.description && <p>{todo.description}</p>}
                     <footer>
                       <span>{statusName[status]}</span>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          remove(todo.id);
-                        }}
-                      >
-                        刪除
-                      </button>
+                      <span className="todo-card-actions">
+                        {status === "done" && <button onClick={(e) => { e.stopPropagation(); setState((current) => ({ ...current, todos: current.todos.map((item) => item.id === todo.id ? { ...item, archivedAt: new Date().toISOString() } : item) })); }}>移入已完成</button>}
+                        <button onClick={(e) => { e.stopPropagation(); remove(todo.id); }}>刪除</button>
+                      </span>
                     </footer>
                   </article>
                 ))}
@@ -1125,6 +1311,27 @@ function TodoPage({
           </section>
         ))}
       </div>
+      <section className={`todo-completed-archive ${dragPreview?.over === "archive" ? "drag-over" : ""}`} data-todo-archive="true">
+        <button
+          type="button"
+          className="archive-toggle"
+          aria-expanded={showCompleted}
+          onClick={() => setShowCompleted((value) => !value)}
+        >
+          {showCompleted ? "⌄" : "›"} 已完成（{todos.filter((todo) => todo.archivedAt).length}）
+        </button>
+        {showCompleted && (
+          <div className="completed-list">
+            {todos.filter((todo) => todo.archivedAt).map((todo) => (
+              <button type="button" className="completed-row" key={todo.id} onClick={() => setEditing(todo)}>
+                <span className="completed-check">✓</span>
+                <span>{todo.title}</span>
+                <small>{todo.endDate || todo.dueDate || "已完成"}</small>
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
       {dragPreview && (
         <div
           className="todo-drag-ghost"
@@ -1161,7 +1368,7 @@ function TodoEditor({
       title: "",
       description: "",
       status: "todo",
-      color: "purple",
+      color: "violet",
       dueDate: "",
       startDate: "",
       endDate: "",
@@ -1225,6 +1432,7 @@ function TodoEditor({
         <Field label="起始日">
           <input
             type="date"
+            aria-label="起始日"
             value={form.startDate || form.dueDate || ""}
             onChange={(e) =>
               setForm({
@@ -1238,6 +1446,7 @@ function TodoEditor({
         <Field label="截止日">
           <input
             type="date"
+            aria-label="截止日"
             min={form.startDate || undefined}
             value={form.endDate || form.dueDate || ""}
             onChange={(e) => setForm({ ...form, endDate: e.target.value })}
@@ -1249,19 +1458,14 @@ function TodoEditor({
           {colors.map((c) => (
             <button
               key={c}
-              className={`${c} ${form.color === c ? "selected" : ""}`}
-              onClick={() => setForm({ ...form, color: c, customColor: undefined })}
+              type="button"
+              aria-label={paletteItem(c).label}
+              title={paletteItem(c).label}
+              className={`palette-swatch ${form.color === c ? "selected" : ""}`}
+              style={{ backgroundColor: paletteItem(c).base }}
+              onClick={() => setForm({ ...form, color: c })}
             />
           ))}
-          <label className="custom-color-pick" title="自選顏色">
-            <span style={customColorStyle(form.customColor)}>自選</span>
-            <input
-              aria-label="自選待辦顏色"
-              type="color"
-              value={form.customColor || "#8b72aa"}
-              onChange={(event) => setForm({ ...form, customColor: event.target.value })}
-            />
-          </label>
         </div>
       </Field>
     </Modal>
@@ -1412,7 +1616,12 @@ function DiaryPage({
           ariaLabel="日記內容"
           placeholder="慢慢寫，不用一次寫完……"
           onChange={(bodyHtml, body) =>
-            save({ ...entry, body, bodyHtml, updatedAt: new Date().toISOString() })
+            save({
+              ...entry,
+              body,
+              bodyHtml,
+              updatedAt: new Date().toISOString(),
+            })
           }
         />
         {found && (
@@ -1674,7 +1883,7 @@ function InboxPage({
                 title: item.text,
                 description: "",
                 status: "todo",
-                color: "purple",
+                color: "violet",
                 dueDate: "",
                 position: 99,
               },
@@ -1797,7 +2006,8 @@ function InboxPage({
                     }))
                   }
                   onKeyDown={(event) => {
-                    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") setEditingId("");
+                    if ((event.ctrlKey || event.metaKey) && event.key === "Enter")
+                      setEditingId("");
                   }}
                 />
               ) : (
@@ -1836,7 +2046,7 @@ function TrashPage({
         kind: "calendarItems" as const,
         id: x.id,
         title: x.title,
-        type: "月曆",
+        type: "行事曆",
       })),
     ...state.todos
       .filter((x) => x.deletedAt)
@@ -2047,22 +2257,6 @@ function SettingsPage({
   };
   return (
     <div className="page settings-grid">
-      <Panel title="個人化">
-        <Field label="使用者名稱">
-          <input
-            aria-label="使用者名稱"
-            placeholder="希望月光簿怎麼稱呼你？"
-            value={settings.userName}
-            onChange={(e) =>
-              setState((s) => ({
-                ...s,
-                settings: { ...s.settings, userName: e.target.value },
-              }))
-            }
-          />
-        </Field>
-        <p className="setting-hint">名稱只保存在你的電腦上，也可以隨時修改。</p>
-      </Panel>
       <Panel title="外觀">
         <Field label="主題">
           <select
@@ -2088,7 +2282,10 @@ function SettingsPage({
             onChange={(e) =>
               setState((s) => ({
                 ...s,
-                settings: { ...s.settings, fontScale: Number(e.target.value) },
+                settings: {
+                  ...s.settings,
+                  fontScale: Number(e.target.value),
+                },
               }))
             }
           >
@@ -2101,7 +2298,7 @@ function SettingsPage({
         </Field>
         <p className="setting-hint">調整介面文字與控制項的閱讀尺寸，不會改變資料內容。</p>
       </Panel>
-      <Panel title="月光精靈">
+      <Panel title="Q 版月光精靈">
         <Field label="顯示">
           <input
             type="checkbox"
@@ -2142,9 +2339,9 @@ function SettingsPage({
             }}
           />
         </Field>
-        <Field label="自訂聊天網址">
+        <Field label="我們的家">
           <input
-            placeholder="例如：https://chatgpt.com/"
+            placeholder="貼上『我們的家』對話網址"
             value={settings.chatUrl}
             onChange={(e) =>
               setState((s) => ({
@@ -2155,7 +2352,7 @@ function SettingsPage({
           />
         </Field>
         <p className="setting-hint">
-          選填。點擊 App 內的月光精靈時，會在瀏覽器開啟這個網址。
+          在瀏覽器開啟你的 ChatGPT 或其他對話網址，複製網址列的完整網址貼到這裡。
         </p>
       </Panel>
       <Panel title="資料與備份">
@@ -2189,7 +2386,7 @@ function SettingsPage({
               value={backupPath}
               disabled={!window.__TAURI_INTERNALS__}
               onChange={(e) => setBackupPath(e.target.value)}
-              placeholder="請選擇或輸入備份資料夾"
+              placeholder="例如 F:\\月光簿備份"
             />
           </Field>
           <button
@@ -2264,7 +2461,7 @@ function SettingsPage({
             value={path}
             disabled={!window.__TAURI_INTERNALS__}
             onChange={(e) => setPath(e.target.value)}
-            placeholder="請選擇或輸入資料儲存位置"
+            placeholder="例如 D:\\月光簿資料"
           />
         </Field>
         <button
@@ -2353,7 +2550,7 @@ function QuickCapture({
                   title: text.trim(),
                   description: "",
                   status: "todo",
-                  color: "purple",
+                  color: "violet",
                   dueDate: "",
                   position: 99,
                 },
@@ -2473,7 +2670,7 @@ function Search({
       ...state.calendarItems
         .filter((x) => !x.deletedAt && find(x.title))
         .map((x) => ({
-          type: "月曆",
+          type: "行事曆",
           title: x.title,
           page: "calendar" as PageName,
           date: x.date,
@@ -2565,7 +2762,7 @@ function Search({
           value={type}
           onChange={(e) => setType(e.target.value)}
         >
-          {["全部", "待辦", "月曆", "日記", "筆記", "相簿", "收集箱"].map(
+          {["全部", "待辦", "行事曆", "日記", "筆記", "相簿", "收集箱"].map(
             (value) => (
               <option key={value}>{value}</option>
             ),
@@ -2806,8 +3003,9 @@ export default function App() {
       />
     );
   return (
-    <div
-      className={`app ${state.settings.theme}`}
+    <>
+      <div
+        className={`app ${state.settings.theme}`}
       style={{ "--font-scale": String(state.settings.fontScale || 1) } as CSSProperties}
     >
       <Sidebar
@@ -2838,7 +3036,6 @@ export default function App() {
         </header>
         {content}
       </main>
-      <FloatingSpirit state={state} setState={setState} />
       {capture && (
         <QuickCapture onClose={() => setCapture(false)} setState={setState} />
       )}{" "}
@@ -2903,6 +3100,8 @@ export default function App() {
           </Field>
         </Modal>
       )}
-    </div>
+      </div>
+      <FloatingSpirit state={state} setState={setState} />
+    </>
   );
 }

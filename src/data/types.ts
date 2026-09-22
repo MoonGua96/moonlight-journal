@@ -1,3 +1,7 @@
+import type { PaletteId } from "./colors";
+
+export type LegacyPaletteId = "purple" | "gold" | "sage" | "blue" | "gray";
+
 export type PageName =
   | "today"
   | "calendar"
@@ -19,8 +23,8 @@ export interface CalendarItem {
   date: string;
   title: string;
   time: string;
-  color: "purple" | "gold" | "sage" | "blue";
-  customColor?: string;
+  endTime?: string;
+  color: PaletteId | LegacyPaletteId;
   deletedAt?: string;
 }
 
@@ -29,12 +33,12 @@ export interface Todo {
   title: string;
   description: string;
   status: TodoStatus;
-  color: "purple" | "gold" | "sage" | "blue";
-  customColor?: string;
+  color: PaletteId | LegacyPaletteId;
   dueDate: string;
   startDate?: string;
   endDate?: string;
   position: number;
+  archivedAt?: string;
   deletedAt?: string;
 }
 
@@ -48,6 +52,7 @@ export interface DiaryEntry {
   date: string;
   title: string;
   body: string;
+  /** Rich-text HTML added in v0.8; body remains for plain-text exports/backward compatibility. */
   bodyHtml?: string;
   snippets: DiarySnippet[];
   updatedAt: string;
@@ -72,11 +77,22 @@ export interface NoteFolder {
   position: number;
 }
 
-export type NoteBlockType = "paragraph" | "heading" | "bulletList" | "numberList" | "checkList" | "quote" | "image" | "drawing" | "table" | "divider";
+export type NoteBlockType =
+  | "paragraph"
+  | "heading"
+  | "bulletList"
+  | "numberList"
+  | "checkList"
+  | "quote"
+  | "image"
+  | "drawing"
+  | "table"
+  | "divider";
 export interface NoteBlock {
   id: string;
   type: NoteBlockType;
   content?: string;
+  /** Rich-text HTML for paragraph/heading/quote blocks. */
   html?: string;
   checked?: boolean[];
   dataUrl?: string;
@@ -124,6 +140,7 @@ export interface Album {
   description: string;
   createdAt: string;
   coverPhotoId?: string;
+  /** Stable folder name under media/albums; does not change when title is edited. */
   mediaFolder?: string;
   position?: number;
   deletedAt?: string;
@@ -137,8 +154,7 @@ export interface RecurringEvent {
   endTime: string;
   startDate: string;
   endDate: string;
-  color: "purple" | "gold" | "sage" | "blue";
-  customColor?: string;
+  color: PaletteId | LegacyPaletteId;
   exceptions: string[];
   overrides: Record<
     string,
@@ -228,6 +244,7 @@ export interface AppSettings {
   theme: "light" | "dark";
   showDesktopPet: boolean;
   backupDirectory: string;
+  /** 1 = default; larger values improve readability without changing stored content. */
   fontScale: number;
 }
 

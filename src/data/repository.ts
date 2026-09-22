@@ -1,5 +1,6 @@
 import type { AppState } from "./types";
 import { initialState } from "./types";
+import { nearestPaletteId } from "./colors";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 const STORAGE_KEY = "moonlight-journal.v0.2.state";
@@ -10,20 +11,38 @@ const cloneInitial = (): AppState => structuredClone(initialState);
 
 export const normalizeState = (value: Partial<AppState>): AppState => {
   const base = cloneInitial();
+  const normalizeColored = <T extends { color?: string; customColor?: string }>(item: T) => {
+    const { customColor, ...rest } = item;
+    return { ...rest, color: nearestPaletteId(customColor || item.color) };
+  };
   return {
     ...base,
     ...value,
     birthdays: value.birthdays || [],
     holidays: value.holidays || base.holidays,
-    recurringEvents: value.recurringEvents || [],
+    recurringEvents: (value.recurringEvents || []).map((event) => {
+      const normalized = normalizeColored(event);
+      return {
+        ...normalized,
+        overrides: Object.fromEntries(
+          Object.entries(event.overrides || {}).map(([date, override]) => {
+            const next = normalizeColored(override as { color?: string; customColor?: string });
+            return [date, next];
+          }),
+        ),
+      };
+    }),
     ledgerEntries: value.ledgerEntries || [],
     ledgerCategories: (value.ledgerCategories || []).map((category) => ({
       ...category,
-      color: category.color || (category.type === "income" ? "#5e8f78" : "#9a647d"),
+      color:
+        category.color ||
+        (category.type === "income" ? "#5e8f78" : "#9a647d"),
     })),
     noteFolders: value.noteFolders || [],
+    calendarItems: (value.calendarItems || []).map((item) => normalizeColored(item)),
     todos: (value.todos || []).map((todo) => ({
-      ...todo,
+      ...normalizeColored(todo),
       startDate: todo.startDate ?? todo.dueDate ?? "",
       endDate: todo.endDate ?? todo.dueDate ?? "",
       dueDate: todo.dueDate ?? todo.endDate ?? "",
@@ -39,7 +58,18 @@ export const normalizeState = (value: Partial<AppState>): AppState => {
               position: tab.position ?? tabIndex,
               sections: (tab.sections || []).map((section) => ({
                 ...section,
-                blocks: section.blocks && section.blocks.length ? section.blocks : section.body ? [{ id: `${section.id}-paragraph`, type: "paragraph" as const, content: section.body }] : [],
+                blocks:
+                  section.blocks && section.blocks.length
+                    ? section.blocks
+                    : section.body
+                      ? [
+                          {
+                            id: `${section.id}-paragraph`,
+                            type: "paragraph" as const,
+                            content: section.body,
+                          },
+                        ]
+                      : [],
               })),
             }))
           : [
@@ -48,7 +78,18 @@ export const normalizeState = (value: Partial<AppState>): AppState => {
                 title: "內容",
                 sections: (note.sections || []).map((section) => ({
                   ...section,
-                  blocks: section.blocks && section.blocks.length ? section.blocks : section.body ? [{ id: `${section.id}-paragraph`, type: "paragraph" as const, content: section.body }] : [],
+                  blocks:
+                    section.blocks && section.blocks.length
+                      ? section.blocks
+                      : section.body
+                        ? [
+                            {
+                              id: `${section.id}-paragraph`,
+                              type: "paragraph" as const,
+                              content: section.body,
+                            },
+                          ]
+                        : [],
                 })),
                 position: 0,
               },
