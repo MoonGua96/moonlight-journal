@@ -11,6 +11,7 @@ import {
   makeId,
   todayKey,
   type AppState,
+  type LedgerCategory,
   type LedgerEntry,
 } from "../data/types";
 
@@ -34,6 +35,10 @@ export default function LedgerPage({
 }) {
   const [month, setMonth] = useState(todayKey.slice(0, 7));
   const [editing, setEditing] = useState<LedgerEntry | null>(null);
+  const [categoryDialog, setCategoryDialog] = useState<{
+    type: LedgerCategory["type"];
+    category?: LedgerCategory;
+  } | null>(null);
   const [categoryFilter, setCategoryFilter] = useState("all");
   const categoryDrag = useRef("");
   const categories = state.ledgerCategories.length
@@ -107,25 +112,18 @@ export default function LedgerPage({
   };
   return (
     <div className="page ledger-page">
-      <div className="page-tools">
-        <input
-          aria-label="記帳月份"
-          type="month"
-          value={month}
-          onChange={(e) => setMonth(e.target.value)}
-        />
-        <select
-          aria-label="分類篩選"
-          value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
-        >
-          <option value="all">全部分類</option>
-          {categories.map((category) => (
-            <option key={category.id} value={category.id}>
-              {category.name}
-            </option>
-          ))}
-        </select>
+      <div className="page-tools ledger-tools">
+        <label className="ledger-filter">
+          <span>查看月份</span>
+          <input aria-label="記帳月份" type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
+        </label>
+        <label className="ledger-filter">
+          <span>分類篩選</span>
+          <select aria-label="分類篩選" value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+            <option value="all">全部分類</option>
+            {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+          </select>
+        </label>
         <button
           className="primary"
           onClick={() =>
@@ -161,18 +159,7 @@ export default function LedgerPage({
             <i>{category.type === "expense" ? "支" : "收"}</i>
             <button
               onClick={() => {
-                const name = prompt("分類名稱", category.name)?.trim();
-                if (!name) return;
-                ensureCategories();
-                setState((current) => ({
-                  ...current,
-                  ledgerCategories: (current.ledgerCategories.length
-                    ? current.ledgerCategories
-                    : categories
-                  ).map((item) =>
-                    item.id === category.id ? { ...item, name } : item,
-                  ),
-                }));
+                setCategoryDialog({ type: category.type, category });
               }}
             >
               {category.name}
@@ -230,42 +217,14 @@ export default function LedgerPage({
         ))}
         <button
           onClick={() => {
-            const name = prompt("新增支出分類名稱")?.trim();
-            if (name)
-              setState((current) => ({
-                ...current,
-                ledgerCategories: [
-                  ...categories,
-                  {
-                    id: makeId("ledger-category"),
-                    name,
-                    type: "expense",
-                    position: categories.length,
-                    color: "#9a647d",
-                  },
-                ],
-              }));
+            setCategoryDialog({ type: "expense" });
           }}
         >
           ＋ 支出分類
         </button>
         <button
           onClick={() => {
-            const name = prompt("新增收入分類名稱")?.trim();
-            if (name)
-              setState((current) => ({
-                ...current,
-                ledgerCategories: [
-                  ...categories,
-                  {
-                    id: makeId("ledger-category"),
-                    name,
-                    type: "income",
-                    position: categories.length,
-                    color: "#5e8f78",
-                  },
-                ],
-              }));
+            setCategoryDialog({ type: "income" });
           }}
         >
           ＋ 收入分類
@@ -331,6 +290,26 @@ export default function LedgerPage({
           }}
         />
       )}
+      {categoryDialog && (
+        <CategoryEditor
+          value={categoryDialog.category}
+          type={categoryDialog.type}
+          onClose={() => setCategoryDialog(null)}
+          onSave={(name, color) => {
+            ensureCategories();
+            setState((current) => {
+              const source = current.ledgerCategories.length ? current.ledgerCategories : categories;
+              return {
+                ...current,
+                ledgerCategories: categoryDialog.category
+                  ? source.map((item) => item.id === categoryDialog.category?.id ? { ...item, name, color } : item)
+                  : [...source, { id: makeId("ledger-category"), name, type: categoryDialog.type, position: source.length, color }],
+              };
+            });
+            setCategoryDialog(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -361,7 +340,7 @@ function LedgerEditor({
             <small>LEDGER</small>
             <h2>{value.amount ? "編輯紀錄" : "記一筆"}</h2>
           </div>
-          <button aria-label="關閉" onClick={onClose}>
+          <button className="close" aria-label="關閉" onClick={onClose}>
             ×
           </button>
         </header>
@@ -452,4 +431,28 @@ function LedgerEditor({
       </section>
     </div>
   );
+}
+
+function CategoryEditor({ value, type, onClose, onSave }: {
+  value?: LedgerCategory;
+  type: LedgerCategory["type"];
+  onClose: () => void;
+  onSave: (name: string, color: string) => void;
+}) {
+  const [name, setName] = useState(value?.name || "");
+  const [color, setColor] = useState(value?.color || (type === "income" ? "#5e8f78" : "#9a647d"));
+  const swatches = type === "income" ? ["#5e8f78", "#4e8eaa", "#9274b5", "#b28a42", "#6f8f5e"] : ["#9a647d", "#b26969", "#8a6b9f", "#b47b43", "#6e789e"];
+  return <div className="modal-layer" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <section className="modal category-editor" role="dialog" aria-modal="true" aria-label={value ? "編輯分類" : "新增分類"}>
+      <header><div><small>LEDGER CATEGORY</small><h2>{value ? "編輯分類" : `新增${type === "income" ? "收入" : "支出"}分類`}</h2></div><button className="close" aria-label="關閉" onClick={onClose}>×</button></header>
+      <div className="modal-body">
+        <label className="field"><span>分類名稱</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：生活雜支" /></label>
+        <div className="category-color-editor"><span>分類顏色</span><div className="category-swatches">
+          {swatches.map((swatch) => <button key={swatch} type="button" aria-label={`選擇 ${swatch}`} className={color === swatch ? "selected" : ""} style={{ backgroundColor: swatch }} onClick={() => setColor(swatch)} />)}
+          <label className="category-custom-color" title="自選顏色"><span style={{ backgroundColor: color }}>自選</span><input aria-label="自選分類顏色" type="color" value={color} onChange={(event) => setColor(event.target.value)} /></label>
+        </div></div>
+      </div>
+      <footer><span>顏色會套用到分類標籤與帳目</span><button disabled={!name.trim()} onClick={() => onSave(name.trim(), color)}>儲存</button></footer>
+    </section>
+  </div>;
 }

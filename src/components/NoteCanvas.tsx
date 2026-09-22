@@ -7,6 +7,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { makeId, type NoteBlock, type NoteBlockType } from "../data/types";
+import RichTextEditor from "./RichTextEditor";
 
 type Props = {
   blocks: NoteBlock[];
@@ -204,5 +205,12 @@ function BlockContent({ block, update }: { block: NoteBlock; update: (patch: Par
     return <div className="structured-list">{lines.map((line, index) => <label key={index}><b>{block.type === "bulletList" ? "•" : `${index + 1}.`}</b><input value={line} placeholder="列表項目" onKeyDown={(event) => { if (event.key !== "Enter") return; event.preventDefault(); const next = [...lines]; next.splice(index + 1, 0, ""); update({ content: next.join("\n") }); requestAnimationFrame(() => (event.currentTarget.parentElement?.nextElementSibling?.querySelector("input") as HTMLInputElement | null)?.focus()); }} onChange={(event) => { const next = [...lines]; next[index] = event.target.value; update({ content: next.join("\n") }); }} /></label>)}</div>;
   }
   const placeholder = block.type === "heading" ? "輸入標題" : block.type === "quote" ? "輸入引言" : "輸入文字……";
-  return <textarea className="block-text" rows={block.type === "heading" ? 1 : 3} value={block.content || ""} placeholder={placeholder} onChange={(event) => update({ content: event.target.value })} />;
+  return <RichTextEditor
+    html={block.html}
+    text={block.content || ""}
+    ariaLabel={placeholder}
+    placeholder={placeholder}
+    compact={block.type === "heading"}
+    onChange={(html, text) => update({ html, content: text })}
+  />;
 }

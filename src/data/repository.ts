@@ -57,6 +57,9 @@ export const normalizeState = (value: Partial<AppState>): AppState => {
     albums: (value.albums || base.albums).map((album, index) => ({
       ...album,
       position: album.position ?? index,
+      mediaFolder:
+        album.mediaFolder ||
+        `album-${album.id.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 72)}`,
     })),
     inbox: (value.inbox || []).map((item, index) => ({
       ...item,
@@ -69,6 +72,10 @@ export const normalizeState = (value: Partial<AppState>): AppState => {
     settings: {
       ...base.settings,
       ...(value.settings || {}),
+      fontScale: Math.min(
+        1.4,
+        Math.max(1, Number(value.settings?.fontScale ?? base.settings.fontScale) || 1),
+      ),
     },
   };
 };
@@ -138,6 +145,7 @@ export async function storeMedia(
   id: string,
   file: File,
   previewDataUrl: string,
+  albumFolder?: string,
 ) {
   if (!window.__TAURI_INTERNALS__) {
     return {
@@ -150,8 +158,27 @@ export async function storeMedia(
     dataDir: await dataDirectory(),
     mediaId: id,
     originalName: file.name,
+    albumFolder: albumFolder || null,
     originalBase64: await fileToBase64(file),
     previewBase64: previewDataUrl.split(",", 2)[1] || "",
+  });
+}
+
+export async function ensureAlbumMediaDirectory(folder: string) {
+  if (!window.__TAURI_INTERNALS__) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("ensure_album_media_directory", {
+    dataDir: await dataDirectory(),
+    albumFolder: folder,
+  });
+}
+
+export async function openMediaLocation(relativePath?: string) {
+  if (!relativePath || !window.__TAURI_INTERNALS__) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("reveal_media_location", {
+    dataDir: await dataDirectory(),
+    relativePath,
   });
 }
 

@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type Dispatch,
+  type CSSProperties,
   type FormEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -41,6 +42,7 @@ import VaultPage from "./components/VaultPage";
 import LedgerPage from "./components/LedgerPage";
 import RecurringEventEditor from "./components/RecurringEventEditor";
 import NotesWorkspace from "./components/NotesWorkspace";
+import RichTextEditor from "./components/RichTextEditor";
 import TrashPageNew from "./components/TrashPage";
 
 const pageMeta: Record<PageName, [string, string]> = {
@@ -74,11 +76,37 @@ const nav: Array<[PageName, string, string]> = [
   ["albums", "▧", "相簿"],
   ["ledger", "$", "記帳"],
   ["vault", "🔐", "密碼保管庫"],
-  ["inbox", "⌑", "收集箱"],
+  ["inbox", "✧", "收集箱"],
   ["trash", "♲", "回收桶"],
 ];
 
 type StateSetter = Dispatch<SetStateAction<AppState>>;
+const dailyMoonNotes = [
+  ["今天不用很厲害", "有記下一點點，就已經替未來的自己留下光了。"],
+  ["慢一點也沒關係", "你正在走的路，會把今天的努力帶到未來。"],
+  ["留一點空白給自己", "休息不是停下來，是讓心重新有力氣。"],
+  ["小小完成也值得", "每一個勾起來的瞬間，都是你照顧自己的證明。"],
+  ["今天也有好好生活", "不必把所有事做完，願意開始就很珍貴。"],
+  ["把心放回當下", "窗外的光、手邊的事，都是此刻溫柔的提醒。"],
+  ["你已經比昨天更靠近了", "不急著抵達，沿途留下的足跡也很閃亮。"],
+] as const;
+const dayOfYear = (value: Date) => {
+  const start = new Date(value.getFullYear(), 0, 1);
+  return Math.floor((value.getTime() - start.getTime()) / 86400000);
+};
+const readableColor = (color: string) => {
+  const value = color.replace("#", "");
+  if (value.length !== 6) return "#fff";
+  const [r, g, b] = [0, 2, 4].map((index) => Number.parseInt(value.slice(index, index + 2), 16));
+  return (r * 299 + g * 587 + b * 114) / 1000 > 155 ? "#403247" : "#fff";
+};
+const customColorStyle = (color?: string): CSSProperties | undefined => color ? ({
+  backgroundColor: color,
+  borderColor: color,
+  color: readableColor(color),
+  "--calendar-custom-color": color,
+  "--calendar-custom-text": readableColor(color),
+} as CSSProperties) : undefined;
 const dateLabel = (date: string) =>
   new Intl.DateTimeFormat("zh-TW", {
     month: "long",
@@ -215,12 +243,14 @@ function Today({
         title: x.title,
         time: "",
         color: x.color,
+        customColor: x.customColor,
       })),
   ];
   const focus = state.todos
     .filter((x) => !x.deletedAt && x.status !== "done")
     .slice(0, 3);
   const diary = state.diaries.find((x) => x.date === todayKey && !x.deletedAt);
+  const moonNote = dailyMoonNotes[dayOfYear(new Date()) % dailyMoonNotes.length];
   const hour = new Date().getHours(),
     greeting = hour < 11 ? "早安" : hour < 17 ? "午安" : "晚上好",
     weekday = new Intl.DateTimeFormat("zh-TW", { weekday: "long" }).format(
@@ -298,8 +328,8 @@ function Today({
           <span>☾</span>
           <div>
             <small>MOON NOTE</small>
-            <h3>今天不用很厲害</h3>
-            <p>有記下一點點，就已經替未來的自己留下光了。</p>
+            <h3>{moonNote[0]}</h3>
+            <p>{moonNote[1]}</p>
           </div>
         </article>
       </div>
@@ -387,6 +417,7 @@ function CalendarPage({
           title: override.title || event.title,
           time: override.startTime || event.startTime,
           color: override.color || event.color,
+          customColor: override.customColor || event.customColor,
         };
       });
     return [
@@ -404,6 +435,7 @@ function CalendarPage({
           title: x.title,
           time: "",
           color: x.color,
+          customColor: x.customColor,
           completed: x.status === "done",
           rangeStart: x.startDate || x.dueDate,
           rangeEnd: x.endDate || x.dueDate,
@@ -476,6 +508,7 @@ function CalendarPage({
                         ...x,
                         title: item.title,
                         color: item.color,
+                        customColor: item.customColor,
                       }
                     : x,
                 )
@@ -487,6 +520,7 @@ function CalendarPage({
                     description: "",
                     status: "todo",
                     color: item.color,
+                    customColor: item.customColor,
                     dueDate: item.date,
                     startDate: item.date,
                     endDate: item.date,
@@ -621,6 +655,7 @@ function CalendarPage({
                       key={x.id}
                       title={x.title}
                       className={`${x.color} ${x.completed ? "calendar-todo-complete" : ""}`}
+                      style={customColorStyle(x.customColor)}
                     >
                       {x.title}
                     </small>
@@ -637,6 +672,7 @@ function CalendarPage({
                 gridColumn: `${startColumn + 1} / ${endColumn + 2}`,
                 gridRow: `${weekIndex + 1}`,
                 marginBottom: `${8 + lane * 24}px`,
+                ...customColorStyle(todo.customColor),
               }}
             >
               <span>{todo.title}</span>
@@ -881,9 +917,18 @@ function CalendarEditor({
             <button
               key={c}
               className={`${c} ${form.color === c ? "selected" : ""}`}
-              onClick={() => setForm({ ...form, color: c })}
+              onClick={() => setForm({ ...form, color: c, customColor: undefined })}
             />
           ))}
+          <label className="custom-color-pick" title="自選顏色">
+            <span style={customColorStyle(form.customColor)}>自選</span>
+            <input
+              aria-label="自選行事曆顏色"
+              type="color"
+              value={form.customColor || (form.color === "purple" ? "#8b72aa" : form.color === "gold" ? "#c89034" : form.color === "sage" ? "#6d9c82" : "#6b8fbd")}
+              onChange={(event) => setForm({ ...form, customColor: event.target.value })}
+            />
+          </label>
         </div>
       </Field>
     </Modal>
@@ -1205,9 +1250,18 @@ function TodoEditor({
             <button
               key={c}
               className={`${c} ${form.color === c ? "selected" : ""}`}
-              onClick={() => setForm({ ...form, color: c })}
+              onClick={() => setForm({ ...form, color: c, customColor: undefined })}
             />
           ))}
+          <label className="custom-color-pick" title="自選顏色">
+            <span style={customColorStyle(form.customColor)}>自選</span>
+            <input
+              aria-label="自選待辦顏色"
+              type="color"
+              value={form.customColor || "#8b72aa"}
+              onChange={(event) => setForm({ ...form, customColor: event.target.value })}
+            />
+          </label>
         </div>
       </Field>
     </Modal>
@@ -1239,6 +1293,7 @@ function DiaryPage({
     date,
     title: "",
     body: "",
+    bodyHtml: "",
     snippets: [],
     updatedAt: new Date().toISOString(),
   };
@@ -1351,17 +1406,14 @@ function DiaryPage({
           }
           placeholder="今天的標題"
         />
-        <textarea
-          className="entry-body"
-          value={entry.body}
-          onChange={(e) =>
-            save({
-              ...entry,
-              body: e.target.value,
-              updatedAt: new Date().toISOString(),
-            })
-          }
+        <RichTextEditor
+          html={entry.bodyHtml}
+          text={entry.body}
+          ariaLabel="日記內容"
           placeholder="慢慢寫，不用一次寫完……"
+          onChange={(bodyHtml, body) =>
+            save({ ...entry, body, bodyHtml, updatedAt: new Date().toISOString() })
+          }
         />
         {found && (
           <button
@@ -2029,6 +2081,25 @@ function SettingsPage({
             <option value="dark">深色</option>
           </select>
         </Field>
+        <Field label="介面字體大小">
+          <select
+            aria-label="介面字體大小"
+            value={settings.fontScale || 1}
+            onChange={(e) =>
+              setState((s) => ({
+                ...s,
+                settings: { ...s.settings, fontScale: Number(e.target.value) },
+              }))
+            }
+          >
+            <option value="1">標準（100%）</option>
+            <option value="1.1">稍大（110%）</option>
+            <option value="1.2">大（120%）</option>
+            <option value="1.3">特大（130%）</option>
+            <option value="1.4">更大（140%）</option>
+          </select>
+        </Field>
+        <p className="setting-hint">調整介面文字與控制項的閱讀尺寸，不會改變資料內容。</p>
       </Panel>
       <Panel title="月光精靈">
         <Field label="顯示">
@@ -2354,7 +2425,7 @@ function QuickCapture({
             key={x}
             onClick={() => setType(x)}
           >
-            {x === "inbox" ? "⌑ 收集箱" : x === "todo" ? "✓ 待辦" : "✎ 日記"}
+            {x === "inbox" ? "✧ 收集箱" : x === "todo" ? "✓ 待辦" : "✎ 日記"}
           </button>
         ))}
       </div>
@@ -2735,7 +2806,10 @@ export default function App() {
       />
     );
   return (
-    <div className={`app ${state.settings.theme}`}>
+    <div
+      className={`app ${state.settings.theme}`}
+      style={{ "--font-scale": String(state.settings.fontScale || 1) } as CSSProperties}
+    >
       <Sidebar
         page={page}
         setPage={setPage}

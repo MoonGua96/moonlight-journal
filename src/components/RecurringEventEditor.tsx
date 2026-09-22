@@ -54,6 +54,7 @@ export default function RecurringEventEditor({
             startTime: form.startTime,
             endTime: form.endTime,
             color: form.color,
+            customColor: form.customColor,
           },
         },
       });
@@ -66,7 +67,7 @@ export default function RecurringEventEditor({
             <small>WEEKLY</small>
             <h2>{value ? "編輯固定行程" : "新增每週固定行程"}</h2>
           </div>
-          <button aria-label="關閉" onClick={onClose}>
+          <button className="close" aria-label="關閉" onClick={onClose}>
             ×
           </button>
         </header>
@@ -163,9 +164,13 @@ export default function RecurringEventEditor({
                   key={color}
                   aria-label={color}
                   className={`${color} ${form.color === color ? "selected" : ""}`}
-                  onClick={() => setForm({ ...form, color })}
+                  onClick={() => setForm({ ...form, color, customColor: undefined })}
                 />
               ))}
+              <label className="custom-color-pick" title="自選顏色">
+                <span style={{ backgroundColor: form.customColor || "#8b72aa" }}>自選</span>
+                <input aria-label="自選固定行程顏色" type="color" value={form.customColor || "#8b72aa"} onChange={(event) => setForm({ ...form, customColor: event.target.value })} />
+              </label>
             </div>
           </Field>
         </div>

@@ -96,6 +96,20 @@ fn safe_media_id(id: &str) -> Result<&str, String> {
     Ok(id)
 }
 
+fn safe_album_folder(folder: Option<&str>) -> Result<Option<PathBuf>, String> {
+    let Some(folder) = folder.filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if folder.len() > 120
+        || Path::new(folder)
+            .components()
+            .any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return Err("相簿資料夾名稱不正確".into());
+    }
+    Ok(Some(PathBuf::from(folder)))
+}
+
 #[tauri::command]
 fn store_media(
     data_dir: String,
@@ -103,9 +117,14 @@ fn store_media(
     original_name: String,
     original_base64: String,
     preview_base64: String,
+    album_folder: Option<String>,
 ) -> Result<StoredMedia, String> {
     let id = safe_media_id(&media_id)?;
     let root = PathBuf::from(data_dir).join("media");
+    let root = match safe_album_folder(album_folder.as_deref())? {
+        Some(folder) => root.join("albums").join(folder),
+        None => root,
+    };
     let originals = root.join("originals");
     let previews = root.join("previews");
     fs::create_dir_all(&originals).map_err(|e| e.to_string())?;
@@ -122,10 +141,67 @@ fn store_media(
         let _ = fs::remove_file(&original);
         return Err(error.to_string());
     }
+    let prefix = match album_folder.as_deref() {
+        Some(folder) if !folder.is_empty() => format!("media/albums/{folder}"),
+        _ => "media".to_string(),
+    };
     Ok(StoredMedia {
-        original_path: format!("media/originals/{original_name}"),
-        preview_path: format!("media/previews/{preview_name}"),
+        original_path: format!("{prefix}/originals/{original_name}"),
+        preview_path: format!("{prefix}/previews/{preview_name}"),
     })
+}
+
+#[tauri::command]
+fn ensure_album_media_directory(data_dir: String, album_folder: String) -> Result<(), String> {
+    let folder = safe_album_folder(Some(&album_folder))?
+        .ok_or_else(|| "相簿資料夾名稱不可空白".to_string())?;
+    let root = PathBuf::from(data_dir)
+        .join("media")
+        .join("albums")
+        .join(folder);
+    fs::create_dir_all(root.join("originals")).map_err(|error| error.to_string())?;
+    fs::create_dir_all(root.join("previews")).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn reveal_media_location(data_dir: String, relative_path: String) -> Result<(), String> {
+    let relative = checked_relative(&relative_path)?;
+    if relative.as_os_str().is_empty() {
+        return Err("找不到媒體檔案位置".into());
+    }
+    let absolute = PathBuf::from(data_dir).join(relative);
+    if !absolute.exists() {
+        return Err("找不到媒體檔案，可能已被移動或刪除".into());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer.exe")
+            .arg(format!("/select,{}", absolute.display()))
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&absolute)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let folder = absolute.parent().unwrap_or(&absolute);
+        std::process::Command::new("xdg-open")
+            .arg(folder)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("目前平台不支援開啟檔案位置".into())
 }
 
 fn checked_relative(path: &str) -> Result<PathBuf, String> {
@@ -340,6 +416,8 @@ pub fn run() {
             load_state,
             save_state,
             store_media,
+            ensure_album_media_directory,
+            reveal_media_location,
             remove_media,
             load_media,
             move_data_directory,

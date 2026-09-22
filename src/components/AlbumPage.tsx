@@ -8,7 +8,13 @@ import {
   type SetStateAction,
 } from "react";
 import { prepareMedia } from "../data/media";
-import { loadMediaBlob, mediaSource, storeMedia } from "../data/repository";
+import {
+  ensureAlbumMediaDirectory,
+  loadMediaBlob,
+  mediaSource,
+  openMediaLocation,
+  storeMedia,
+} from "../data/repository";
 import {
   makeId,
   todayKey,
@@ -124,6 +130,8 @@ export default function AlbumPage({
   const [name, setName] = useState("");
   const [importMessage, setImportMessage] = useState("");
   const migrating = useRef(false);
+  const albumFolder = (value?: Album) =>
+    value?.mediaFolder || `album-${(value?.id || "legacy").replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 72)}`;
   const photos = state.photos.filter(
     (x) => !x.deletedAt && x.albumId === album?.id,
   );
@@ -148,6 +156,7 @@ export default function AlbumPage({
             photo.id,
             file,
             prepared.previewDataUrl,
+            albumFolder(state.albums.find((item) => item.id === photo.albumId) || albums[0]),
           );
           if (!("originalPath" in stored)) continue;
           setState((current) => ({
@@ -178,14 +187,20 @@ export default function AlbumPage({
 
   const addAlbum = () => {
     if (!name.trim()) return;
+    const id = makeId("album");
+    const folderTitle = name.trim().replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, "-").slice(0, 48) || "相簿";
     const next: Album = {
-      id: makeId("album"),
+      id,
       title: name.trim(),
       description: "",
       createdAt: new Date().toISOString(),
+      mediaFolder: `${folderTitle}-${id.slice(-8)}`,
       position: albums.length,
     };
     setState((current) => ({ ...current, albums: [...current.albums, next] }));
+    void ensureAlbumMediaDirectory(next.mediaFolder!).catch((error) =>
+      setImportMessage(`相簿已建立，但資料夾尚未建立：${error instanceof Error ? error.message : "請稍後重試"}`),
+    );
     setAlbumId(next.id);
     setName("");
     setCreating(false);
@@ -200,7 +215,16 @@ export default function AlbumPage({
       try {
         const id = makeId("media");
         const prepared = await prepareMedia(file);
-        const stored = await storeMedia(id, file, prepared.previewDataUrl);
+        const folder = albumFolder(album);
+        if (!album.mediaFolder) {
+          setState((current) => ({
+            ...current,
+            albums: current.albums.map((item) =>
+              item.id === album.id ? { ...item, mediaFolder: folder } : item,
+            ),
+          }));
+        }
+        const stored = await storeMedia(id, file, prepared.previewDataUrl, folder);
         const browser = "originalDataUrl" in stored;
         const item: AlbumPhoto = {
           id,
@@ -515,6 +539,22 @@ export default function AlbumPage({
               }
             >
               {editing.favorite ? "★ 已收藏" : "☆ 收藏"}
+            </button>
+            <button
+              className="secondary"
+              disabled={!editing.originalPath}
+              title={editing.originalPath ? "在檔案總管中選取原始檔" : "瀏覽器預覽沒有本機檔案位置"}
+              onClick={() => {
+                if (!editing.originalPath) {
+                  setImportMessage("瀏覽器預覽沒有可開啟的本機檔案位置。桌面版可直接開啟。");
+                  return;
+                }
+                void openMediaLocation(editing.originalPath).catch((error) =>
+                  setImportMessage(error instanceof Error ? error.message : "無法開啟檔案位置"),
+                );
+              }}
+            >
+              ⌂ 開啟檔案位置
             </button>
             <button
               className="secondary"

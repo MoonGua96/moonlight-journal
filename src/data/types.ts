@@ -20,6 +20,7 @@ export interface CalendarItem {
   title: string;
   time: string;
   color: "purple" | "gold" | "sage" | "blue";
+  customColor?: string;
   deletedAt?: string;
 }
 
@@ -29,6 +30,7 @@ export interface Todo {
   description: string;
   status: TodoStatus;
   color: "purple" | "gold" | "sage" | "blue";
+  customColor?: string;
   dueDate: string;
   startDate?: string;
   endDate?: string;
@@ -46,6 +48,7 @@ export interface DiaryEntry {
   date: string;
   title: string;
   body: string;
+  bodyHtml?: string;
   snippets: DiarySnippet[];
   updatedAt: string;
   deletedAt?: string;
@@ -74,6 +77,7 @@ export interface NoteBlock {
   id: string;
   type: NoteBlockType;
   content?: string;
+  html?: string;
   checked?: boolean[];
   dataUrl?: string;
   width?: number;
@@ -120,6 +124,7 @@ export interface Album {
   description: string;
   createdAt: string;
   coverPhotoId?: string;
+  mediaFolder?: string;
   position?: number;
   deletedAt?: string;
 }
@@ -133,6 +138,7 @@ export interface RecurringEvent {
   startDate: string;
   endDate: string;
   color: "purple" | "gold" | "sage" | "blue";
+  customColor?: string;
   exceptions: string[];
   overrides: Record<
     string,
@@ -222,6 +228,7 @@ export interface AppSettings {
   theme: "light" | "dark";
   showDesktopPet: boolean;
   backupDirectory: string;
+  fontScale: number;
 }
 
 export interface AppState {
@@ -272,5 +279,6 @@ export const initialState: AppState = {
     theme: "light",
     showDesktopPet: true,
     backupDirectory: "",
+    fontScale: 1,
   },
 };
