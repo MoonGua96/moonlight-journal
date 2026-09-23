@@ -24,7 +24,7 @@ const baseTodo = (values: Partial<Todo>): Todo => ({
   ...values,
 });
 
-describe("v0.8.0 todo calendar rules", () => {
+describe("v0.8.1 todo calendar rules", () => {
   it("repeated weekly days are independent completion instances", () => {
     const todo = baseTodo({
       startDate: "2026-09-21",

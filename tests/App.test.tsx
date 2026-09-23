@@ -86,7 +86,7 @@ async function renderReady(overrides: Partial<AppState> = {}) {
   await screen.findByRole("heading", { name: "今天", level: 1 });
 }
 
-describe("月光簿 v0.8.0", () => {
+describe("月光簿 v0.8.1", () => {
   it("舊待辦期限與舊筆記會自動轉成新版結構", () => {
     const migrated = normalizeState({
       todos: [
