@@ -8,6 +8,8 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import App from "../src/App";
 import PetApp from "../src/PetApp";
+import { parseGovernmentCalendarCsv } from "../src/components/CalendarDataModal";
+import { sanitizeRichText } from "../src/components/RichTextEditor";
 import { initialState, todayKey, type AppState } from "../src/data/types";
 import { lunarInfo } from "../src/data/calendar";
 import { normalizeState } from "../src/data/repository";
@@ -19,17 +21,56 @@ import {
 } from "../src/data/vault";
 
 const STORAGE_KEY = "moonlight-journal.v0.2.state";
-const TEST_VAULT = {
-  account: "fixture-user",
-  primary: ["fixture", "primary"].join("-"),
-  replacement: ["fixture", "replacement"].join("-"),
-  wrong: ["fixture", "wrong"].join("-"),
-  protected: ["fixture", "value"].join("-"),
-};
 
 function testState(overrides: Partial<AppState> = {}): AppState {
   return {
     ...structuredClone(initialState),
+    calendarItems: [
+      {
+        id: "event-1",
+        type: "note",
+        date: todayKey,
+        title: "整理求職資料",
+        time: "10:00",
+        color: "violet",
+      },
+    ],
+    todos: [
+      {
+        id: "todo-1",
+        title: "確認第一版資訊架構",
+        description: "檢查左側導航與頁面關係。",
+        status: "todo",
+        color: "violet",
+        dueDate: todayKey,
+        position: 0,
+      },
+      {
+        id: "todo-2",
+        title: "製作測試版本",
+        description: "",
+        status: "doing",
+        color: "sky",
+        dueDate: "",
+        position: 0,
+      },
+    ],
+    inbox: [
+      {
+        id: "inbox-1",
+        text: "整理一份今年的學習地圖",
+        createdAt: new Date().toISOString(),
+      },
+    ],
+    notes: [
+      {
+        id: "note-1",
+        title: "React 學習歷程",
+        folder: "學習筆記",
+        updatedAt: new Date().toISOString(),
+        sections: [{ id: "section-1", title: "測試章節", body: "測試內容" }],
+      },
+    ],
     ...overrides,
     settings: {
       ...initialState.settings,
@@ -45,7 +86,7 @@ async function renderReady(overrides: Partial<AppState> = {}) {
   await screen.findByRole("heading", { name: "今天", level: 1 });
 }
 
-describe("月光簿 v0.6.0", () => {
+describe("月光簿 v0.8.0", () => {
   it("舊待辦期限與舊筆記會自動轉成新版結構", () => {
     const migrated = normalizeState({
       todos: [
@@ -75,7 +116,8 @@ describe("月光簿 v0.6.0", () => {
     });
     expect(migrated.notes[0].tabs?.[0].sections[0].body).toBe("內容");
   });
-  it("公開版初始資料完全空白", () => {
+
+  it("公開版新使用者初始資料為空白", () => {
     expect(initialState.calendarItems).toEqual([]);
     expect(initialState.todos).toEqual([]);
     expect(initialState.diaries).toEqual([]);
@@ -86,22 +128,21 @@ describe("月光簿 v0.6.0", () => {
     expect(initialState.holidays).toEqual([]);
     expect(initialState.inbox).toEqual([]);
     expect(initialState.vault).toBeUndefined();
-    expect(initialState.settings).toMatchObject({
-      userName: "",
-      chatUrl: "",
-      backupDirectory: "",
-    });
+    expect(initialState.settings).toMatchObject({ userName: "", chatUrl: "", backupDirectory: "" });
   });
 
   it("首次啟動可設定顯示名稱", async () => {
     render(<App />);
-    fireEvent.change(await screen.findByLabelText("首次設定名稱"), {
-      target: { value: "測試使用者" },
-    });
+    fireEvent.change(await screen.findByLabelText("首次設定名稱"), { target: { value: "測試使用者" } });
     fireEvent.click(screen.getByRole("button", { name: "開始使用" }));
-    expect(
-      await screen.findByRole("heading", { name: /測試使用者/ }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /測試使用者/ })).toBeInTheDocument();
+  });
+
+  it("設定中可編輯顯示名稱", async () => {
+    await renderReady();
+    fireEvent.click(screen.getByRole("button", { name: "設定" }));
+    fireEvent.change(screen.getByLabelText("顯示名稱"), { target: { value: "新名稱" } });
+    expect(screen.getByLabelText("顯示名稱")).toHaveValue("新名稱");
   });
 
   it("可正確顯示農曆春節", () => {
@@ -137,6 +178,13 @@ describe("月光簿 v0.6.0", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("月檢視快速列出事項，不顯示行程時間", async () => {
+    await renderReady();
+    fireEvent.click(screen.getByRole("button", { name: "行事曆" }));
+    const entry = screen.getByText("整理求職資料").closest(".calendar-month-entry")!;
+    expect(entry).not.toHaveTextContent("10:00");
+  });
+
   it("可新增待辦並保存到畫面", async () => {
     await renderReady();
     fireEvent.click(screen.getByRole("button", { name: "待辦事項" }));
@@ -159,22 +207,80 @@ describe("月光簿 v0.6.0", () => {
     );
   });
 
-  it("待辦卡片可以拖到另一個狀態欄", async () => {
-    await renderReady({
-      todos: [
-        {
-          id: "todo-drag",
-          title: "測試拖曳待辦",
-          description: "",
-          status: "todo",
-          color: "purple",
-          dueDate: "",
-          position: 0,
-        },
-      ],
-    });
+  it("多日待辦可逐日勾選，且看板系列卡維持進行中", async () => {
+    await renderReady();
+    const end = new Date(`${todayKey}T12:00:00`);
+    end.setDate(end.getDate() + 2);
+    const endKey = end.toLocaleDateString("sv-SE");
     fireEvent.click(screen.getByRole("button", { name: "待辦事項" }));
-    const source = screen.getByText("測試拖曳待辦").closest("article")!;
+    fireEvent.click(screen.getByRole("button", { name: "＋ 新增待辦" }));
+    fireEvent.change(screen.getByLabelText("標題"), { target: { value: "逐日完成的工作" } });
+    fireEvent.change(screen.getByLabelText("起始日"), { target: { value: todayKey } });
+    fireEvent.change(screen.getByLabelText("截止日"), { target: { value: endKey } });
+    fireEvent.click(screen.getByRole("button", { name: "儲存" }));
+
+    const card = screen.getByText("逐日完成的工作").closest("article")!;
+    expect(card).toHaveClass("multi-day");
+    expect(within(card).getByText("進行中")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "行事曆" }));
+    const first = screen.getByLabelText(`完成 逐日完成的工作（${todayKey}）`);
+    const secondDate = new Date(`${todayKey}T12:00:00`);
+    secondDate.setDate(secondDate.getDate() + 1);
+    const second = screen.getByLabelText(`完成 逐日完成的工作（${secondDate.toLocaleDateString("sv-SE")}）`);
+    fireEvent.click(first);
+    expect(first).toBeChecked();
+    expect(second).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: "待辦事項" }));
+    expect(screen.getByText("1/3 天完成")).toBeInTheDocument();
+    expect(within(screen.getByText("逐日完成的工作").closest("article")!).getByText("進行中")).toBeInTheDocument();
+  });
+
+  it("待辦編輯器可建立每週多日重複系列", async () => {
+    await renderReady();
+    fireEvent.click(screen.getByRole("button", { name: "待辦事項" }));
+    fireEvent.click(screen.getByRole("button", { name: "＋ 新增待辦" }));
+    fireEvent.change(screen.getByLabelText("標題"), { target: { value: "每週整理工作桌" } });
+    fireEvent.change(screen.getByLabelText("重複頻率"), { target: { value: "weekly" } });
+    const weekdays = within(screen.getByRole("group", { name: "重複星期" })).getAllByRole("button");
+    weekdays.forEach((button, day) => {
+      const shouldBeSelected = day === 1 || day === 2;
+      const selected = button.getAttribute("aria-pressed") === "true";
+      if (selected !== shouldBeSelected) fireEvent.click(button);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "儲存" }));
+    await waitFor(() => expect(localStorage.getItem("moonlight-journal.v0.2.state")).toContain("每週整理工作桌"));
+    const saved = JSON.parse(localStorage.getItem("moonlight-journal.v0.2.state")!);
+    const todo = saved.todos.find((item: { title: string }) => item.title === "每週整理工作桌");
+    expect(todo.recurrence.rules[0]).toMatchObject({ frequency: "weekly", weekdays: [1, 2] });
+    expect(todo.status).toBe("todo");
+  });
+
+  it("長期進度任務可在同一天新增多筆文字紀錄", async () => {
+    await renderReady();
+    fireEvent.click(screen.getByRole("button", { name: "待辦事項" }));
+    fireEvent.click(screen.getByRole("button", { name: "＋ 新增待辦" }));
+    fireEvent.change(screen.getByLabelText("標題"), { target: { value: "整理研究計畫" } });
+    fireEvent.change(screen.getByLabelText("任務類型"), { target: { value: "progress" } });
+    fireEvent.click(screen.getByRole("button", { name: "儲存" }));
+
+    fireEvent.click(screen.getByText("整理研究計畫"));
+    fireEvent.change(screen.getByLabelText("新增進度紀錄"), { target: { value: "完成研究問題草稿" } });
+    fireEvent.click(screen.getByRole("button", { name: "新增紀錄" }));
+    fireEvent.change(screen.getByLabelText("新增進度紀錄"), { target: { value: "補上參考資料" } });
+    fireEvent.click(screen.getByRole("button", { name: "新增紀錄" }));
+
+    expect(screen.getByText("完成研究問題草稿")).toBeInTheDocument();
+    expect(screen.getAllByText("補上參考資料")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "完成" }));
+    expect(screen.getByText("補上參考資料")).toBeInTheDocument();
+  });
+
+  it("待辦卡片可以拖到另一個狀態欄", async () => {
+    await renderReady();
+    fireEvent.click(screen.getByRole("button", { name: "待辦事項" }));
+    const source = screen.getByText("確認第一版資訊架構").closest("article")!;
     const target = screen
       .getByRole("heading", { name: "進行中" })
       .closest("section")!;
@@ -203,7 +309,7 @@ describe("月光簿 v0.6.0", () => {
       clientX: 100,
       clientY: 80,
     });
-    expect(within(target).getByText("測試拖曳待辦")).toBeInTheDocument();
+    expect(within(target).getByText("確認第一版資訊架構")).toBeInTheDocument();
   });
 
   it("空白快速記錄不能儲存", async () => {
@@ -212,17 +318,24 @@ describe("月光簿 v0.6.0", () => {
     expect(screen.getByRole("button", { name: "儲存" })).toBeDisabled();
   });
 
-  it("月曆待辦會同步出現在待辦看板", async () => {
+  it("週檢視可新增記事，行事曆不提供新增待辦按鈕", async () => {
     await renderReady();
     fireEvent.click(screen.getByRole("button", { name: "行事曆" }));
-    fireEvent.click(screen.getByRole("button", { name: todayKey }));
-    fireEvent.click(screen.getByRole("button", { name: "＋ 新增待辦" }));
+    expect(screen.queryByRole("button", { name: "＋ 新增待辦" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "週" }));
+    const weekView = screen.getByRole("button", { name: `新增 ${todayKey} 記事` }).closest(".calendar-week-view")!;
+    expect(weekView.querySelectorAll(".calendar-week-time-axis .calendar-timeline-hour")).toHaveLength(24);
+    expect(weekView.querySelectorAll(".calendar-week-timelines > section")).toHaveLength(7);
+    expect(weekView.querySelectorAll(".calendar-week-all-day-cells > .calendar-all-day")).toHaveLength(7);
+    fireEvent.click(screen.getByRole("button", { name: `新增 ${todayKey} 記事` }));
     fireEvent.change(screen.getByLabelText("內容"), {
-      target: { value: "月曆同步測試" },
+      target: { value: "週檢視記事測試" },
     });
+    fireEvent.change(screen.getByLabelText("開始時間"), { target: { value: "10:00" } });
+    fireEvent.change(screen.getByLabelText("結束時間"), { target: { value: "10:30" } });
     fireEvent.click(screen.getByRole("button", { name: "儲存" }));
-    fireEvent.click(screen.getByRole("button", { name: "待辦事項" }));
-    expect(screen.getByText("月曆同步測試")).toBeInTheDocument();
+    expect(screen.getByText("週檢視記事測試")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "＋ 新增待辦" })).not.toBeInTheDocument();
   });
 
   it("月曆可以直接跳到選取日期的日記", async () => {
@@ -258,58 +371,28 @@ describe("月光簿 v0.6.0", () => {
   });
 
   it("收集箱內容可轉成待辦", async () => {
-    await renderReady({
-      inbox: [
-        {
-          id: "inbox-test",
-          text: "待整理的測試想法",
-          createdAt: new Date().toISOString(),
-        },
-      ],
-    });
+    await renderReady();
     fireEvent.click(screen.getByRole("button", { name: "收集箱" }));
-    const row = screen.getByText("待整理的測試想法").closest("article")!;
+    const row = screen.getByText("整理一份今年的學習地圖").closest("article")!;
     fireEvent.click(within(row).getByRole("button", { name: "轉待辦" }));
     fireEvent.click(screen.getByRole("button", { name: "待辦事項" }));
-    expect(screen.getByText("待整理的測試想法")).toBeInTheDocument();
+    expect(screen.getByText("整理一份今年的學習地圖")).toBeInTheDocument();
   });
 
   it("刪除的待辦可以從回收桶復原", async () => {
-    await renderReady({
-      todos: [
-        {
-          id: "todo-restore",
-          title: "測試復原待辦",
-          description: "",
-          status: "todo",
-          color: "gold",
-          dueDate: "",
-          position: 0,
-        },
-      ],
-    });
+    await renderReady();
     fireEvent.click(screen.getByRole("button", { name: "待辦事項" }));
-    const card = screen.getByText("測試復原待辦").closest("article")!;
+    const card = screen.getByText("確認第一版資訊架構").closest("article")!;
     fireEvent.click(within(card).getByRole("button", { name: "刪除" }));
     fireEvent.click(screen.getByRole("button", { name: "回收桶" }));
-    const row = screen.getByText("測試復原待辦").closest("article")!;
+    const row = screen.getByText("確認第一版資訊架構").closest("article")!;
     fireEvent.click(within(row).getByRole("button", { name: "復原" }));
     fireEvent.click(screen.getByRole("button", { name: "待辦事項" }));
-    expect(screen.getByText("測試復原待辦")).toBeInTheDocument();
+    expect(screen.getByText("確認第一版資訊架構")).toBeInTheDocument();
   });
 
   it("筆記提供章節、圖片與簡易畫筆", async () => {
-    await renderReady({
-      notes: [
-        {
-          id: "note-tools",
-          title: "測試筆記工具",
-          folder: "測試",
-          sections: [{ id: "section-tools", title: "第一節", body: "" }],
-          updatedAt: new Date().toISOString(),
-        },
-      ],
-    });
+    await renderReady();
     fireEvent.click(screen.getByRole("button", { name: "筆記" }));
     expect(
       screen.getByRole("button", { name: "新增章節" }),
@@ -327,48 +410,24 @@ describe("月光簿 v0.6.0", () => {
   });
 
   it("可以搜尋所有記錄", async () => {
-    await renderReady({
-      notes: [
-        {
-          id: "note-search",
-          title: "搜尋測試筆記",
-          folder: "測試",
-          sections: [
-            { id: "section-search", title: "內容", body: "特殊搜尋詞" },
-          ],
-          updatedAt: new Date().toISOString(),
-        },
-      ],
-    });
+    await renderReady();
     fireEvent.click(screen.getByRole("button", { name: "搜尋" }));
     fireEvent.change(screen.getByPlaceholderText("輸入關鍵字……"), {
-      target: { value: "特殊搜尋詞" },
+      target: { value: "React" },
     });
-    expect(screen.getByText("搜尋測試筆記")).toBeInTheDocument();
+    expect(screen.getByText("React 學習歷程")).toBeInTheDocument();
   });
 
   it("搜尋可依內容類型篩選", async () => {
-    await renderReady({
-      notes: [
-        {
-          id: "note-filter",
-          title: "篩選測試筆記",
-          folder: "測試",
-          sections: [
-            { id: "section-filter", title: "內容", body: "篩選專用詞" },
-          ],
-          updatedAt: new Date().toISOString(),
-        },
-      ],
-    });
+    await renderReady();
     fireEvent.click(screen.getByRole("button", { name: "搜尋" }));
     fireEvent.change(screen.getByPlaceholderText("輸入關鍵字……"), {
-      target: { value: "篩選專用詞" },
+      target: { value: "React" },
     });
     fireEvent.change(screen.getByLabelText("內容類型"), {
       target: { value: "月曆" },
     });
-    expect(screen.queryByText("篩選測試筆記")).not.toBeInTheDocument();
+    expect(screen.queryByText("React 學習歷程")).not.toBeInTheDocument();
     expect(screen.getByText("沒有找到符合的記錄")).toBeInTheDocument();
   });
 
@@ -380,29 +439,65 @@ describe("月光簿 v0.6.0", () => {
     ).toBeInTheDocument();
   });
 
-  it("桌面月光精靈本身可拖曳並可開啟月光簿", async () => {
-    render(<PetApp />);
+  it("桌面月光精靈保留拖曳與雙擊開啟行為", async () => {
+    const { container } = render(<PetApp />);
     expect(screen.getByRole("button", { name: "打開月光簿" })).toHaveAttribute(
       "title",
       "按住月光精靈移動；連點兩下打開月光簿",
     );
-    expect(
-      screen.getByRole("button", { name: "打開月光簿" }),
-    ).toBeInTheDocument();
+    expect(container.querySelector(".spirit-orb")).toBeInTheDocument();
+  });
+
+  it("文字格式工具會保留文字顏色、螢光筆與字型樣式", () => {
+    const html = sanitizeRichText(
+      '<span style="font-weight: bold; font-style: italic; text-decoration: underline line-through; color: rgb(10, 20, 30); background-color: rgb(240, 220, 100)">格式測試</span>',
+    );
+    expect(html).toContain("font-weight: bold");
+    expect(html).toContain("font-style: italic");
+    expect(html).toContain("text-decoration: underline line-through");
+    expect(html).toContain("color: rgb(10, 20, 30)");
+    expect(html).toContain("background-color: rgb(240, 220, 100)");
+  });
+
+  it("可讀取政府行事曆 CSV 的 YYYYMMDD 日期與放假代碼", () => {
+    const values = parseGovernmentCalendarCsv(
+      "\uFEFF西元日期,星期,是否放假,備註\n" +
+        "20270101,五,2,開國紀念日\n" +
+        "20270102,六,2,\n" +
+        "20270104,一,0,\n" +
+        "20270109,六,0,補班日\n",
+    );
+    expect(values).toEqual([
+      expect.objectContaining({
+        date: "2027-01-01",
+        name: "開國紀念日",
+        type: "national",
+      }),
+      expect.objectContaining({
+        date: "2027-01-09",
+        name: "補班日",
+        type: "makeup",
+      }),
+    ]);
+  });
+
+  it("App內月光精靈不會被介面字體縮放容器影響", async () => {
+    await renderReady();
+    expect(screen.getByRole("button", { name: "找月光精靈聊聊" }).closest(".app")).toBeNull();
   });
 
   it("可建立加密密碼保管庫", async () => {
     await renderReady();
     fireEvent.click(screen.getByRole("button", { name: "密碼保管庫" }));
     fireEvent.change(screen.getByLabelText("保管庫帳號"), {
-      target: { value: TEST_VAULT.account },
+      target: { value: "moon" },
     });
     const passwordInputs = screen.getAllByLabelText(/主密碼|再輸入一次/);
     fireEvent.change(passwordInputs[0], {
-      target: { value: TEST_VAULT.primary },
+      target: { value: "correct-horse-2026" },
     });
     fireEvent.change(passwordInputs[1], {
-      target: { value: TEST_VAULT.primary },
+      target: { value: "correct-horse-2026" },
     });
     fireEvent.click(screen.getByRole("button", { name: "建立並解鎖" }));
     expect(await screen.findByText(/0 筆已加密的帳密/)).toBeInTheDocument();
@@ -412,35 +507,35 @@ describe("月光簿 v0.6.0", () => {
     await waitFor(() => {
       const saved = localStorage.getItem("moonlight-journal.v0.2.state") || "";
       expect(saved).toContain("ciphertext");
-      expect(saved).not.toContain(TEST_VAULT.primary);
+      expect(saved).not.toContain("correct-horse-2026");
     });
   });
 
   it("保管庫輸錯密碼不會破壞加密資料", async () => {
     const envelope = await sealVault(
-      TEST_VAULT.account,
-      TEST_VAULT.primary,
+      "moon",
+      "correct-horse-2026",
       emptyVault(),
     );
     const originalCiphertext = envelope.ciphertext;
     await expect(
-      unlockVault(envelope, TEST_VAULT.account, TEST_VAULT.wrong),
+      unlockVault(envelope, "moon", "wrong-password"),
     ).rejects.toThrow("帳號或主密碼錯誤");
     expect(envelope.ciphertext).toBe(originalCiphertext);
     await expect(
-      unlockVault(envelope, TEST_VAULT.account, TEST_VAULT.primary),
+      unlockVault(envelope, "moon", "correct-horse-2026"),
     ).resolves.toMatchObject({ entries: [], categories: expect.any(Array) });
   });
 
   it("可變更主密碼並讓舊密碼失效", async () => {
-    const original = await sealVault(TEST_VAULT.account, TEST_VAULT.primary, {
+    const original = await sealVault("moon", "old-password-2026", {
       entries: [
         {
           id: "secret-1",
           service: "測試網站",
           url: "",
-          account: TEST_VAULT.account,
-          password: TEST_VAULT.protected,
+          account: "moon",
+          password: "protected-value",
           note: "",
           tags: [],
           updatedAt: new Date().toISOString(),
@@ -449,26 +544,23 @@ describe("月光簿 v0.6.0", () => {
     });
     const changed = await changeVaultPassword(
       original,
-      TEST_VAULT.primary,
-      TEST_VAULT.replacement,
+      "old-password-2026",
+      "new-password-2026",
     );
     expect(changed.salt).not.toBe(original.salt);
     await expect(
-      unlockVault(changed, TEST_VAULT.account, TEST_VAULT.primary),
+      unlockVault(changed, "moon", "old-password-2026"),
     ).rejects.toThrow("帳號或主密碼錯誤");
     await expect(
-      unlockVault(changed, TEST_VAULT.account, TEST_VAULT.replacement),
+      unlockVault(changed, "moon", "new-password-2026"),
     ).resolves.toMatchObject({
-      entries: [{ service: "測試網站", password: TEST_VAULT.protected }],
+      entries: [{ service: "測試網站", password: "protected-value" }],
     });
   });
 
-  it("相簿初始為空白並可新增相簿", async () => {
+  it("相簿初始為空並可新增相簿", async () => {
     await renderReady();
     fireEvent.click(screen.getByRole("button", { name: "相簿" }));
-    expect(
-      screen.getByRole("button", { name: "＋ 建立第一本相簿" }),
-    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "新增相簿" }));
     fireEvent.change(screen.getByPlaceholderText("例如：旅行回憶"), {
       target: { value: "生活小記" },
@@ -479,14 +571,13 @@ describe("月光簿 v0.6.0", () => {
 
   it("相簿接受照片、影片與 HEIC", async () => {
     await renderReady({
-      albums: [
-        {
-          id: "album-media",
-          title: "媒體測試",
-          description: "",
-          createdAt: new Date().toISOString(),
-        },
-      ],
+      albums: [{
+        id: "album-test",
+        title: "旅行回憶",
+        description: "",
+        createdAt: new Date().toISOString(),
+        mediaFolder: "album-test",
+      }],
     });
     fireEvent.click(screen.getByRole("button", { name: "相簿" }));
     const picker = screen.getByText("＋ 加入照片或影片").querySelector("input");
@@ -499,23 +590,22 @@ describe("月光簿 v0.6.0", () => {
 
   it("相簿可以移到回收桶並復原", async () => {
     await renderReady({
-      albums: [
-        {
-          id: "album-restore",
-          title: "測試相簿",
-          description: "",
-          createdAt: new Date().toISOString(),
-        },
-      ],
+      albums: [{
+        id: "album-test",
+        title: "旅行回憶",
+        description: "",
+        createdAt: new Date().toISOString(),
+        mediaFolder: "album-test",
+      }],
     });
     fireEvent.click(screen.getByRole("button", { name: "相簿" }));
-    fireEvent.click(screen.getByRole("button", { name: "刪除相簿 測試相簿" }));
+    fireEvent.click(screen.getByRole("button", { name: /刪除相簿/ }));
     fireEvent.click(screen.getByRole("button", { name: "回收桶" }));
-    const row = screen.getByText("測試相簿").closest("article")!;
+    const row = screen.getByText("旅行回憶").closest("article")!;
     expect(within(row).getByText("相簿")).toBeInTheDocument();
     fireEvent.click(within(row).getByRole("button", { name: "復原" }));
     fireEvent.click(screen.getByRole("button", { name: "相簿" }));
-    expect(screen.getByDisplayValue("測試相簿")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("旅行回憶")).toBeInTheDocument();
   });
 
   it("設定頁會顯示資料儲存位置", async () => {

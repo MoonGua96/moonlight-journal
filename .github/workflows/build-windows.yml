@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 env:
-  RELEASE_VERSION: 0.8.0-rc.1
+  RELEASE_VERSION: 0.8.0
 
 permissions:
   contents: write
@@ -55,7 +55,7 @@ jobs:
         with:
           tag_name: v${{ env.RELEASE_VERSION }}
           name: 月光簿 v${{ env.RELEASE_VERSION }}
-          prerelease: true
+          prerelease: false
           body: |
             Windows 公開版安裝檔。下載下方的 x64-setup.exe 後即可安裝，不需要另外安裝 Node.js 或 Rust。
 

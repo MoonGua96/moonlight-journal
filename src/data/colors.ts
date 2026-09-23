@@ -1,5 +1,3 @@
-import type { CSSProperties } from "react";
-
 export const palette = [
   { id: "violet", label: "紫藤", base: "#7d63a8", light: "#eee8f7", dark: "#57456f" },
   { id: "lavender", label: "薰衣草", base: "#9a82c5", light: "#f0ebfa", dark: "#665582" },
@@ -54,3 +52,4 @@ export const paletteStyle = (id?: string): CSSProperties => {
     "--item-accent": item.base,
   } as CSSProperties;
 };
+import type { CSSProperties } from "react";

@@ -7,6 +7,7 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use tauri_plugin_opener::OpenerExt;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -165,43 +166,23 @@ fn ensure_album_media_directory(data_dir: String, album_folder: String) -> Resul
 }
 
 #[tauri::command]
-fn reveal_media_location(data_dir: String, relative_path: String) -> Result<(), String> {
+fn reveal_media_location(
+    app: tauri::AppHandle,
+    data_dir: String,
+    relative_path: String,
+) -> Result<(), String> {
     let relative = checked_relative(&relative_path)?;
     if relative.as_os_str().is_empty() {
         return Err("找不到媒體檔案位置".into());
     }
-    let absolute = PathBuf::from(data_dir).join(relative);
-    if !absolute.exists() {
+    let absolute = fs::canonicalize(PathBuf::from(data_dir).join(relative))
+        .map_err(|_| "找不到媒體檔案，可能已被移動或刪除".to_string())?;
+    if !absolute.is_file() {
         return Err("找不到媒體檔案，可能已被移動或刪除".into());
     }
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer.exe")
-            .arg(format!("/select,{}", absolute.display()))
-            .spawn()
-            .map_err(|error| error.to_string())?;
-        return Ok(());
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg("-R")
-            .arg(&absolute)
-            .spawn()
-            .map_err(|error| error.to_string())?;
-        return Ok(());
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let folder = absolute.parent().unwrap_or(&absolute);
-        std::process::Command::new("xdg-open")
-            .arg(folder)
-            .spawn()
-            .map_err(|error| error.to_string())?;
-        return Ok(());
-    }
-    #[allow(unreachable_code)]
-    Err("目前平台不支援開啟檔案位置".into())
+    app.opener()
+        .reveal_item_in_dir(absolute.to_string_lossy().as_ref())
+        .map_err(|error| error.to_string())
 }
 
 fn checked_relative(path: &str) -> Result<PathBuf, String> {

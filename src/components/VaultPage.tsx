@@ -167,8 +167,8 @@ export default function VaultPage({
       const ordered = [...currentContents.categories].sort(
         (a, b) => a.position - b.position,
       );
-      const from = ordered.findIndex((item) => item.id === drag.id);
-      const to = ordered.findIndex((item) => item.id === targetId);
+      const from = ordered.findIndex((item) => item.id === drag.id),
+        to = ordered.findIndex((item) => item.id === targetId);
       if (from < 0 || to < 0) return;
       const [moved] = ordered.splice(from, 1);
       ordered.splice(to, 0, moved);
@@ -180,8 +180,8 @@ export default function VaultPage({
       const ordered = [...currentContents.entries].sort(
         (a, b) => (a.position ?? 0) - (b.position ?? 0),
       );
-      const from = ordered.findIndex((item) => item.id === drag.id);
-      const to = ordered.findIndex((item) => item.id === targetId);
+      const from = ordered.findIndex((item) => item.id === drag.id),
+        to = ordered.findIndex((item) => item.id === targetId);
       if (from < 0 || to < 0) return;
       const [moved] = ordered.splice(from, 1);
       ordered.splice(to, 0, moved);

@@ -4,9 +4,7 @@ import {
   type AppState,
   type Birthday,
   type Holiday,
-  type RecurringEvent,
 } from "../data/types";
-import RecurringEventEditor from "./RecurringEventEditor";
 
 type Setter = Dispatch<SetStateAction<AppState>>;
 
@@ -86,16 +84,12 @@ export default function CalendarDataModal({
   state,
   setState,
   onClose,
-  selectedDate,
 }: {
   state: AppState;
   setState: Setter;
   onClose: () => void;
-  selectedDate: string;
 }) {
-  const [tab, setTab] = useState<"birthday" | "holiday" | "recurring">(
-    "birthday",
-  );
+  const [tab, setTab] = useState<"birthday" | "holiday">("birthday");
   const [birthday, setBirthday] = useState<Birthday>({
     id: makeId("birthday"),
     name: "",
@@ -109,9 +103,6 @@ export default function CalendarDataModal({
     name: "",
     type: "national",
   });
-  const [editingRecurring, setEditingRecurring] = useState<
-    RecurringEvent | null | undefined
-  >(undefined);
   const holidays = useMemo(
     () =>
       [...state.holidays]
@@ -174,12 +165,12 @@ export default function CalendarDataModal({
         className="modal calendar-data-modal"
         role="dialog"
         aria-modal="true"
-        aria-label="固定資料管理"
+        aria-label="生日與假日管理"
       >
         <header>
           <div>
             <small>CALENDAR DATA</small>
-            <h2>固定資料管理</h2>
+            <h2>生日與假日管理</h2>
           </div>
           <button className="close" aria-label="關閉" onClick={onClose}>
             ×
@@ -197,12 +188,6 @@ export default function CalendarDataModal({
             onClick={() => setTab("holiday")}
           >
             ◎ 年度假日
-          </button>
-          <button
-            className={tab === "recurring" ? "active" : ""}
-            onClick={() => setTab("recurring")}
-          >
-            ↻ 每週固定行程
           </button>
         </div>
         <div className="modal-body calendar-data-body">
@@ -488,88 +473,7 @@ export default function CalendarDataModal({
                 ))}
               </div>
             </>
-          ) : editingRecurring !== undefined ? (
-            <RecurringEventEditor
-              embedded
-              value={editingRecurring || undefined}
-              occurrenceDate={selectedDate}
-              onClose={() => setEditingRecurring(undefined)}
-              onSave={(event) => {
-                setState((current) => ({
-                  ...current,
-                  recurringEvents: current.recurringEvents.some(
-                    (item) => item.id === event.id,
-                  )
-                    ? current.recurringEvents.map((item) =>
-                        item.id === event.id ? event : item,
-                      )
-                    : [...current.recurringEvents, event],
-                }));
-                setEditingRecurring(undefined);
-              }}
-              onDeleteOccurrence={(event, date) => {
-                setState((current) => ({
-                  ...current,
-                  recurringEvents: current.recurringEvents.map((item) =>
-                    item.id === event.id
-                      ? {
-                          ...item,
-                          exceptions: [...new Set([...item.exceptions, date])],
-                        }
-                      : item,
-                  ),
-                }));
-                setEditingRecurring(undefined);
-              }}
-              onDeleteSeries={(event) => {
-                setState((current) => ({
-                  ...current,
-                  recurringEvents: current.recurringEvents.map((item) =>
-                    item.id === event.id
-                      ? { ...item, deletedAt: new Date().toISOString() }
-                      : item,
-                  ),
-                }));
-                setEditingRecurring(undefined);
-              }}
-            />
-          ) : (
-            <div className="recurring-manager">
-              <div>
-                <h3>每週固定行程</h3>
-                <p>例如每週三 18:00–19:00 運動，並可設定固定起迄日。</p>
-                <button
-                  className="primary"
-                  onClick={() => setEditingRecurring(null)}
-                >
-                  ＋ 新增固定行程
-                </button>
-              </div>
-              <div className="calendar-data-list">
-                {state.recurringEvents
-                  .filter((item) => !item.deletedAt)
-                  .sort((a, b) => a.weekday - b.weekday || a.startTime.localeCompare(b.startTime))
-                  .map((item) => (
-                    <article key={item.id}>
-                      <button
-                        className="recurring-row"
-                        onClick={() => setEditingRecurring(item)}
-                      >
-                        <strong>{item.title}</strong>
-                        <small>
-                          每週{["日", "一", "二", "三", "四", "五", "六"][item.weekday]} · {item.startTime}–{item.endTime}
-                          <br />
-                          {item.startDate} → {item.endDate}
-                        </small>
-                      </button>
-                    </article>
-                  ))}
-                {!state.recurringEvents.some((item) => !item.deletedAt) && (
-                  <p className="empty">還沒有固定行程。</p>
-                )}
-              </div>
-            </div>
-          )}
+          ) : null}
         </div>
       </section>
     </div>

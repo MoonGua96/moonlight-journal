@@ -16,6 +16,51 @@ export type PageName =
   | "settings";
 export type CalendarItemType = "note" | "todo";
 export type TodoStatus = "todo" | "doing" | "paused" | "done";
+export type TodoKind = "task" | "progress";
+export type RecurrenceFrequency = "daily" | "weekly" | "monthly";
+
+export interface TodoOccurrenceOverride {
+  movedTo?: string;
+  title?: string;
+  startTime?: string;
+  endTime?: string;
+  color?: PaletteId | LegacyPaletteId;
+  cancelled?: boolean;
+}
+
+/** A rule segment lets a repeating series change from a selected occurrence onward. */
+export interface RecurrenceRuleSegment {
+  fromDate: string;
+  throughDate?: string;
+  untilDate?: string;
+  frequency: RecurrenceFrequency;
+  weekdays?: number[];
+  dayOfMonth?: number;
+  startTime?: string;
+  endTime?: string;
+  title?: string;
+  color?: PaletteId | LegacyPaletteId;
+}
+
+export interface TodoRecurrence {
+  rules: RecurrenceRuleSegment[];
+  exceptions: string[];
+  overrides: Record<string, TodoOccurrenceOverride>;
+}
+
+export interface ProgressLog {
+  id: string;
+  date: string;
+  text: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface TodoPausePeriod {
+  startDate: string;
+  /** Inclusive final day of the pause. Missing means the pause is still active. */
+  endDate?: string;
+}
 
 export interface CalendarItem {
   id: string;
@@ -32,12 +77,24 @@ export interface Todo {
   id: string;
   title: string;
   description: string;
+  kind?: TodoKind;
   status: TodoStatus;
   color: PaletteId | LegacyPaletteId;
   dueDate: string;
   startDate?: string;
   endDate?: string;
+  startTime?: string;
+  endTime?: string;
   position: number;
+  /** Per-day completion for ordinary date-range tasks; per-occurrence completion for series. */
+  completedDates?: string[];
+  recurrence?: TodoRecurrence;
+  progressLogs?: ProgressLog[];
+  /** Paused periods are retained so calendar entries can resume correctly later. */
+  pausePeriods?: TodoPausePeriod[];
+  /** Keeps the legacy source identity available for migration auditing. */
+  legacyRecurringId?: string;
+  legacyCalendarItemId?: string;
   archivedAt?: string;
   deletedAt?: string;
 }
@@ -88,6 +145,7 @@ export type NoteBlockType =
   | "drawing"
   | "table"
   | "divider";
+
 export interface NoteBlock {
   id: string;
   type: NoteBlockType;

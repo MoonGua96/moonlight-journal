@@ -136,7 +136,11 @@ export default function NoteCanvas({ blocks, onChange }: Props) {
     event.preventDefault();
     const target = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
     const overId = target?.closest<HTMLElement>("[data-block-sort]")?.dataset.blockSort;
-    const next = { ...current, moved: current.moved || Math.hypot(event.clientX - current.startX, event.clientY - current.startY) > 4, overId };
+    const next = {
+      ...current,
+      moved: current.moved || Math.hypot(event.clientX - current.startX, event.clientY - current.startY) > 4,
+      overId,
+    };
     blockDrag.current = next;
     setDragView({ id: next.id, overId });
   };

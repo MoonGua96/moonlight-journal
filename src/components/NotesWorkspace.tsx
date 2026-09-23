@@ -176,7 +176,11 @@ export default function NotesWorkspace({
     }));
   };
 
-  const startPointerDrag = (kind: PointerDrag["kind"], id: string, event: ReactPointerEvent<HTMLButtonElement>) => {
+  const startPointerDrag = (
+    kind: PointerDrag["kind"],
+    id: string,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
@@ -185,6 +189,7 @@ export default function NotesWorkspace({
     pointerDrag.current = next;
     setDragView(next);
   };
+
   const movePointerDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
     const current = pointerDrag.current;
     if (!current) return;
@@ -196,15 +201,21 @@ export default function NotesWorkspace({
     const tabTarget = target?.closest<HTMLElement>("[data-tab-sort]");
     const overKind: PointerDrag["overKind"] = current.kind === "note"
       ? noteTarget ? "note" : folderTarget ? "folder" : undefined
-      : current.kind === "folder" ? folderTarget?.dataset.noteFolder ? "folder" : undefined
+      : current.kind === "folder"
+        ? folderTarget?.dataset.noteFolder ? "folder" : undefined
         : tabTarget ? "tab" : undefined;
-    const overId = overKind === "note" ? noteTarget?.dataset.noteSort
-      : overKind === "folder" ? folderTarget?.dataset.noteFolder
-        : overKind === "tab" ? tabTarget?.dataset.tabSort : undefined;
+    const overId = overKind === "note"
+      ? noteTarget?.dataset.noteSort
+      : overKind === "folder"
+        ? folderTarget?.dataset.noteFolder
+        : overKind === "tab"
+          ? tabTarget?.dataset.tabSort
+          : undefined;
     const next = { ...current, moved, overKind, overId };
     pointerDrag.current = next;
     setDragView(next);
   };
+
   const endPointerDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
     const current = pointerDrag.current;
     if (!current) return;
@@ -214,19 +225,32 @@ export default function NotesWorkspace({
       if (current.kind === "note" && current.overKind === "note") {
         const target = notes.find((item) => item.id === current.overId);
         if (target) reorderNote(current.id, target);
-      } else if (current.kind === "note" && current.overKind === "folder") moveToFolder(current.id, current.overId || undefined);
-      else if (current.kind === "folder" && current.overId) reorderFolder(current.id, current.overId);
-      else if (current.kind === "tab" && current.overId) reorderTab(current.id, current.overId);
+      } else if (current.kind === "note" && current.overKind === "folder") {
+        moveToFolder(current.id, current.overId || undefined);
+      } else if (current.kind === "folder" && current.overId) {
+        reorderFolder(current.id, current.overId);
+      } else if (current.kind === "tab" && current.overId) {
+        reorderTab(current.id, current.overId);
+      }
     }
     pointerDrag.current = null;
     setDragView(null);
   };
+
   const pointerHandle = (kind: PointerDrag["kind"], id: string, label: string) => (
-    <button type="button" className="sort-handle" title="按住拖曳排序" aria-label={label}
+    <button
+      type="button"
+      className="sort-handle"
+      title="按住拖曳排序"
+      aria-label={label}
       onClick={(event) => event.stopPropagation()}
       onPointerDown={(event) => startPointerDrag(kind, id, event)}
-      onPointerMove={movePointerDrag} onPointerUp={endPointerDrag} onPointerCancel={endPointerDrag}>⋮⋮</button>
+      onPointerMove={movePointerDrag}
+      onPointerUp={endPointerDrag}
+      onPointerCancel={endPointerDrag}
+    >⋮⋮</button>
   );
+
   const noteRow = (item: Note) => (
     <div
       key={item.id}

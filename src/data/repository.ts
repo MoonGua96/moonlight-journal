@@ -1,7 +1,8 @@
 import type { AppState } from "./types";
-import { initialState } from "./types";
+import { initialState, todayKey } from "./types";
 import { nearestPaletteId } from "./colors";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { legacyRecurringEventToTodo } from "./todos";
 
 const STORAGE_KEY = "moonlight-journal.v0.2.state";
 const DATA_DIR_KEY = "moonlight-journal.data-directory";
@@ -15,23 +16,104 @@ export const normalizeState = (value: Partial<AppState>): AppState => {
     const { customColor, ...rest } = item;
     return { ...rest, color: nearestPaletteId(customColor || item.color) };
   };
+  const normalizedTodos = (value.todos || []).map((todo) => {
+    const normalized = normalizeColored(todo);
+    const pausePeriods = (todo.pausePeriods || []).filter(
+      (period) => Boolean(period?.startDate),
+    );
+    const hasActivePause = pausePeriods.some((period) => !period.endDate);
+    return {
+      ...normalized,
+      kind: todo.kind || "task",
+      startDate: todo.startDate ?? todo.dueDate ?? "",
+      endDate: todo.endDate ?? todo.dueDate ?? "",
+      dueDate: todo.dueDate ?? todo.endDate ?? "",
+      completedDates: todo.completedDates || [],
+      pausePeriods:
+        todo.status === "paused" && !hasActivePause
+          ? [...pausePeriods, { startDate: todayKey }]
+          : pausePeriods,
+      progressLogs: (todo.progressLogs || []).map((log) => ({
+        ...log,
+        text: log.text || "",
+      })),
+      recurrence: todo.recurrence
+        ? {
+            ...todo.recurrence,
+            rules: (todo.recurrence.rules || []).map((rule) => ({
+              ...rule,
+              ...(rule.color ? { color: nearestPaletteId(rule.color) } : {}),
+              weekdays: rule.weekdays || [],
+            })),
+            exceptions: todo.recurrence.exceptions || [],
+            overrides: Object.fromEntries(
+              Object.entries(todo.recurrence.overrides || {}).map(([date, override]) => [
+                date,
+                {
+                  ...override,
+                  ...(override.color ? { color: nearestPaletteId(override.color) } : {}),
+                },
+              ]),
+            ),
+          }
+        : undefined,
+    };
+  });
+  const legacyCalendarTodos = (value.calendarItems || [])
+    .filter((item) => item.type === "todo")
+    .filter((item) => !normalizedTodos.some((todo) => todo.legacyCalendarItemId === item.id))
+    .map((item, index) => ({
+      id: `todo-calendar-${item.id}`,
+      legacyCalendarItemId: item.id,
+      title: item.title,
+      description: "",
+      kind: "task" as const,
+      status: "todo" as const,
+      color: nearestPaletteId(item.color),
+      dueDate: item.date,
+      startDate: item.date,
+      endDate: item.date,
+      position: normalizedTodos.filter((todo) => todo.status === "todo").length + index,
+      completedDates: [],
+    }));
+  const migratedIds = new Set(
+    normalizedTodos.map((todo) => todo.legacyRecurringId).filter(Boolean),
+  );
+  let nextDoingPosition = Math.max(
+    -1,
+    ...normalizedTodos
+      .filter((todo) => todo.status === "doing" && !todo.deletedAt)
+      .map((todo) => todo.position),
+  ) + 1;
+  const migratedRecurringTodos = (value.recurringEvents || [])
+    .filter((event) => !migratedIds.has(event.id))
+    .map((event) => {
+      const normalized = {
+        ...event,
+        color: nearestPaletteId(event.color),
+        overrides: Object.fromEntries(
+          Object.entries(event.overrides || {}).map(([date, override]) => [
+            date,
+            {
+              ...override,
+              ...(override.color ? { color: nearestPaletteId(override.color) } : {}),
+            },
+          ]),
+        ),
+      };
+      const todo = legacyRecurringEventToTodo(normalized, nextDoingPosition);
+      if (!event.deletedAt) nextDoingPosition++;
+      return todo;
+    });
   return {
     ...base,
     ...value,
     birthdays: value.birthdays || [],
     holidays: value.holidays || base.holidays,
-    recurringEvents: (value.recurringEvents || []).map((event) => {
-      const normalized = normalizeColored(event);
-      return {
-        ...normalized,
-        overrides: Object.fromEntries(
-          Object.entries(event.overrides || {}).map(([date, override]) => {
-            const next = normalizeColored(override as { color?: string; customColor?: string });
-            return [date, next];
-          }),
-        ),
-      };
-    }),
+    // Weekly schedules from v0.8.0 are converted into the unified recurring
+    // todo model. Their full legacy record is retained on the todo via its
+    // recurrence rule, exceptions, overrides, and legacyRecurringId.
+    recurringEvents: [],
     ledgerEntries: value.ledgerEntries || [],
     ledgerCategories: (value.ledgerCategories || []).map((category) => ({
       ...category,
@@ -40,13 +122,10 @@ export const normalizeState = (value: Partial<AppState>): AppState => {
         (category.type === "income" ? "#5e8f78" : "#9a647d"),
     })),
     noteFolders: value.noteFolders || [],
-    calendarItems: (value.calendarItems || []).map((item) => normalizeColored(item)),
-    todos: (value.todos || []).map((todo) => ({
-      ...normalizeColored(todo),
-      startDate: todo.startDate ?? todo.dueDate ?? "",
-      endDate: todo.endDate ?? todo.dueDate ?? "",
-      dueDate: todo.dueDate ?? todo.endDate ?? "",
-    })),
+    calendarItems: (value.calendarItems || [])
+      .filter((item) => item.type !== "todo")
+      .map((item) => normalizeColored(item)),
+    todos: [...normalizedTodos, ...legacyCalendarTodos, ...migratedRecurringTodos],
     notes: (value.notes || []).map((note, index) => ({
       ...note,
       position: note.position ?? index,

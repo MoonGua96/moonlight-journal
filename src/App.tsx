@@ -13,6 +13,7 @@ import {
 import {
   createFullBackup,
   exportState,
+  normalizeState,
   removeMediaFiles,
   restoreFullBackup,
   saveState,
@@ -26,22 +27,32 @@ import {
   type AlbumPhoto,
   type AppState,
   type CalendarItem,
-  type CalendarItemType,
   type DiaryEntry,
   type Note,
   type PageName,
-  type RecurringEvent,
+  type RecurrenceFrequency,
+  type RecurrenceRuleSegment,
+  type TodoKind,
   type Todo,
   type TodoStatus,
 } from "./data/types";
+import {
+  addRuleFromDate,
+  changeTodoStatus,
+  getRuleForDate,
+  getMultiDayCompletedCount,
+  getMultiDayLength,
+  getTodoCalendarEntries,
+  isMultiDayTodo,
+  toggleTodoCompletion,
+} from "./data/todos";
 import { useAppState } from "./data/useAppState";
-import { palette, paletteItem, paletteStyle, type PaletteId } from "./data/colors";
+import { nearestPaletteId, palette, paletteItem, paletteStyle, type PaletteId } from "./data/colors";
 import NoteCanvas from "./components/NoteCanvas";
 import AlbumPage from "./components/AlbumPage";
 import CalendarDataModal from "./components/CalendarDataModal";
 import VaultPage from "./components/VaultPage";
 import LedgerPage from "./components/LedgerPage";
-import RecurringEventEditor from "./components/RecurringEventEditor";
 import NotesWorkspace from "./components/NotesWorkspace";
 import RichTextEditor from "./components/RichTextEditor";
 import TrashPageNew from "./components/TrashPage";
@@ -346,15 +357,21 @@ function Empty({ text }: { text: string }) {
 }
 
 const colors: PaletteId[] = palette.map((item) => item.id);
-type CalendarDisplayItem = CalendarItem & {
-  completed?: boolean;
-  recurringId?: string;
+type CalendarDisplayType = "note" | "todo" | "progress" | "move-hint" | "paused-hint";
+interface CalendarDisplayItem {
+  id: string;
+  type: CalendarDisplayType;
+  date: string;
+  title: string;
+  time: string;
+  endTime?: string;
+  color: Todo["color"];
+  todoId?: string;
   occurrenceDate?: string;
-  rangeStart?: string;
-  rangeEnd?: string;
-};
-const dateInRange = (date: string, start?: string, end?: string) =>
-  Boolean(start && end && date >= start && date <= end);
+  completed?: boolean;
+  movedTo?: string;
+  pausedHint?: boolean;
+}
 const timeToMinutes = (value?: string) => {
   if (!value) return 0;
   const [hours, minutes] = value.split(":").map(Number);
@@ -362,57 +379,124 @@ const timeToMinutes = (value?: string) => {
     ? Math.max(0, Math.min(24 * 60, hours * 60 + minutes))
     : 0;
 };
-const layoutTimedItems = (items: CalendarDisplayItem[]) => {
-  const laneEnds: number[] = [];
-  const laidOut = items
+function CalendarEntryControl({
+  item,
+  className = "",
+  showTime = false,
+  style,
+  onOpen,
+  onToggle,
+}: {
+  item: CalendarDisplayItem;
+  className?: string;
+  showTime?: boolean;
+  style?: CSSProperties;
+  onOpen: (item: CalendarDisplayItem) => void;
+  onToggle?: (item: CalendarDisplayItem) => void;
+}) {
+  const checkable = item.type === "todo" && Boolean(item.todoId && item.occurrenceDate);
+  return (
+    <div
+      className={`calendar-entry-control ${className} ${checkable ? "checkable" : ""} ${item.completed ? "completed" : ""}`}
+      style={{ ...paletteStyle(item.color), ...style }}
+    >
+      {checkable && (
+        <input
+          type="checkbox"
+          aria-label={`完成 ${item.title}（${item.occurrenceDate}）`}
+          checked={Boolean(item.completed)}
+          onClick={(event) => event.stopPropagation()}
+          onChange={() => onToggle?.(item)}
+        />
+      )}
+      <button
+        type="button"
+        className="calendar-entry-open"
+        aria-label={item.type === "move-hint" ? `${item.title} 已改至 ${item.movedTo}` : item.title}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen(item);
+        }}
+      >
+        {showTime && item.time && (
+          <small>{item.time}{item.endTime ? `–${item.endTime}` : ""}</small>
+        )}
+        <span>{item.title}</span>
+        {item.type === "progress" && <small>長期進度 · 期限</small>}
+        {item.type === "move-hint" && <small>已改至 {item.movedTo}</small>}
+        {(item.type === "paused-hint" || item.pausedHint) && <small className="calendar-paused-hint">已暫停</small>}
+      </button>
+    </div>
+  );
+}
+
+const timedItems = (items: CalendarDisplayItem[]) => {
+  const timed = items
     .filter((item) => item.time)
-    .sort((a, b) => (a.time || "").localeCompare(b.time || ""))
-    .map((item) => {
+    .map((item, order) => {
       const start = timeToMinutes(item.time);
       const requestedEnd = item.endTime ? timeToMinutes(item.endTime) : start + 60;
-      const end = Math.max(start + 30, requestedEnd > start ? requestedEnd : start + 60);
-      let lane = laneEnds.findIndex((occupiedUntil) => occupiedUntil <= start);
-      if (lane < 0) lane = laneEnds.length;
-      laneEnds[lane] = end;
-      return { item, start, end, lane };
-    });
-  return laidOut.map((entry) => ({ ...entry, laneCount: Math.max(1, laneEnds.length) }));
+      return {
+        item,
+        order,
+        start,
+        end: Math.max(start + 30, requestedEnd > start ? requestedEnd : start + 60),
+      };
+    })
+    // Put longer events behind shorter overlapping entries while preserving
+    // every event's real start and duration on the timeline.
+    .sort((a, b) => (b.end - b.start) - (a.end - a.start) || a.start - b.start || a.order - b.order);
+  const placed: typeof timed = [];
+  return timed.map((entry) => {
+    const overlapDepth = placed.filter(
+      (other) => entry.start < other.end && other.start < entry.end,
+    ).length;
+    placed.push(entry);
+    const inset = Math.min(overlapDepth * 28, 56);
+    return {
+      ...entry,
+      style: {
+        "--event-top": `${(entry.start / 60) * 34}px`,
+        "--event-height": `${Math.max(34, ((entry.end - entry.start) / 60) * 34 - 3)}px`,
+        left: `${inset}%`,
+        width: `${100 - inset}%`,
+        zIndex: 3 + overlapDepth,
+      } as CSSProperties,
+    };
+  });
 };
+const calendarTimelineHours = (className = "calendar-timeline-hours") => (
+  <div className={className}>
+    {Array.from({ length: 24 }, (_, hour) => (
+      <div className="calendar-timeline-hour" key={hour}>
+        <time>{String(hour).padStart(2, "0")}:00</time>
+        <span />
+      </div>
+    ))}
+  </div>
+);
 const calendarTimeline = (
   items: CalendarDisplayItem[],
   itemClass: "calendar-view-item" | "calendar-day-item",
   onOpen: (item: CalendarDisplayItem) => void,
+  onToggle: (item: CalendarDisplayItem) => void,
+  showHours = true,
 ) => {
-  const laidOut = layoutTimedItems(items);
+  const positionedItems = timedItems(items);
   return (
     <div className="calendar-timeline">
-      <div className="calendar-timeline-hours">
-        {Array.from({ length: 24 }, (_, hour) => (
-          <div className="calendar-timeline-hour" key={hour}>
-            <time>{String(hour).padStart(2, "0")}:00</time>
-            <span />
-          </div>
-        ))}
-      </div>
+      {showHours && calendarTimelineHours()}
       <div className="calendar-timeline-events">
-        {laidOut.map(({ item, start, end, lane, laneCount }) => (
-          <button
-            type="button"
-            className={`${itemClass} calendar-timeline-event`}
+        {positionedItems.map(({ item, style }) => (
+          <CalendarEntryControl
             key={item.id}
-            style={{
-              ...paletteStyle(item.color),
-              "--event-top": `${(start / 60) * 34}px`,
-              "--event-height": `${Math.max(26, ((end - start) / 60) * 34 - 6)}px`,
-              left: `${(lane / laneCount) * 100}%`,
-              width: `calc(${100 / laneCount}% - 4px)`,
-            } as CSSProperties}
-            onClick={() => onOpen(item)}
-          >
-            <small>{item.time}{item.endTime ? `–${item.endTime}` : ""}</small>
-            <span>{item.title}</span>
-            {item.type === "todo" && <small>待辦</small>}
-          </button>
+            item={item}
+            className={`${itemClass} calendar-timeline-event`}
+            showTime
+            style={style}
+            onOpen={onOpen}
+            onToggle={onToggle}
+          />
         ))}
       </div>
     </div>
@@ -433,61 +517,38 @@ function CalendarPage({
   );
   const [selected, setSelected] = useState(todayKey);
   const [calendarView, setCalendarView] = useState<"month" | "week" | "day">("month");
-  const [dialog, setDialog] = useState<{
-    type: CalendarItemType;
-    item?: CalendarItem;
+  const [dialog, setDialog] = useState<{ item?: CalendarItem } | null>(null);
+  const [todoEditor, setTodoEditor] = useState<Todo | null | undefined>(undefined);
+  const [progressEditor, setProgressEditor] = useState<Todo | null>(null);
+  const [occurrenceEditor, setOccurrenceEditor] = useState<{
+    todo: Todo;
+    occurrenceDate: string;
+    displayDate: string;
   } | null>(null);
   const [popover, setPopover] = useState<{ x: number; y: number } | null>(null);
   const [calendarData, setCalendarData] = useState(false);
-  const [recurringDialog, setRecurringDialog] = useState<{
-    event?: RecurringEvent;
-    occurrenceDate?: string;
-  } | null>(null);
   const itemsForDate = (date: string): CalendarDisplayItem[] => {
-    const weekday = new Date(`${date}T12:00:00`).getDay();
-    const recurring = state.recurringEvents
-      .filter(
-        (event) =>
-          !event.deletedAt &&
-          event.weekday === weekday &&
-          dateInRange(date, event.startDate, event.endDate) &&
-          !event.exceptions.includes(date),
-      )
-      .map((event) => {
-        const override = event.overrides[date] || {};
-        return {
-          id: `recurring:${event.id}:${date}`,
-          recurringId: event.id,
-          occurrenceDate: date,
-          type: "note" as const,
-          date,
-          title: override.title || event.title,
-          time: override.startTime || event.startTime,
-          endTime: override.endTime || event.endTime,
-          color: override.color || event.color,
-        };
-      });
     return [
-      ...state.calendarItems.filter((x) => !x.deletedAt && x.date === date),
-      ...state.todos
-        .filter(
-          (x) =>
-            !x.deletedAt &&
-            dateInRange(date, x.startDate || x.dueDate, x.endDate || x.dueDate),
-        )
-        .map((x) => ({
-          id: x.id,
-          type: "todo" as const,
-          date,
-          title: x.title,
-          time: "",
-          color: x.color,
-          completed: x.status === "done",
-          rangeStart: x.startDate || x.dueDate,
-          rangeEnd: x.endDate || x.dueDate,
+      ...state.calendarItems
+        .filter((x) => !x.deletedAt && x.date === date)
+        .map((x) => ({ ...x, type: "note" as const })),
+      ...state.todos.flatMap((todo) =>
+        getTodoCalendarEntries(todo, date).map((entry) => ({
+          id: entry.id,
+          type: entry.kind,
+          date: entry.date,
+          title: entry.title,
+          time: entry.time,
+          endTime: entry.endTime,
+          color: entry.color,
+          todoId: entry.todoId,
+          occurrenceDate: entry.occurrenceDate,
+          completed: entry.completed,
+          movedTo: entry.movedTo,
+          pausedHint: entry.pausedHint,
         })),
-      ...recurring,
-    ];
+      ),
+    ].sort((a, b) => (a.time || "99").localeCompare(b.time || "99"));
   };
   const selectedItems = itemsForDate(selected).sort((a, b) =>
     (a.time || "99").localeCompare(b.time || "99"),
@@ -513,35 +574,6 @@ function CalendarPage({
   const visibleDates = cells.map((cell) =>
     dateKey(new Date(year, m + cell.offset, cell.day)),
   );
-  const calendarRangeBars = Array.from({ length: 6 }, (_, weekIndex) => {
-    const weekDates = visibleDates.slice(weekIndex * 7, weekIndex * 7 + 7);
-    const weekStart = weekDates[0];
-    const weekEnd = weekDates[6];
-    const laneEnds: number[] = [];
-    return state.todos
-      .filter((todo) => {
-        const start = todo.startDate || todo.dueDate;
-        const end = todo.endDate || todo.dueDate;
-        return !todo.deletedAt && start && end && start < end && start <= weekEnd && end >= weekStart;
-      })
-      .map((todo) => {
-        const start = todo.startDate || todo.dueDate;
-        const end = todo.endDate || todo.dueDate;
-        const startColumn = weekDates.findIndex((date) => date >= start);
-        let endColumn = weekDates.length - 1;
-        for (let index = weekDates.length - 1; index >= 0; index--) {
-          if (weekDates[index] <= end) {
-            endColumn = index;
-            break;
-          }
-        }
-        const safeStart = startColumn < 0 ? 0 : startColumn;
-        let lane = laneEnds.findIndex((occupiedUntil) => occupiedUntil < safeStart);
-        if (lane < 0) lane = laneEnds.length;
-        laneEnds[lane] = endColumn;
-        return { todo, weekIndex, startColumn: safeStart, endColumn, lane };
-      });
-  }).flat();
   const selectedDate = new Date(`${selected}T12:00:00`);
   const weekStart = new Date(selectedDate);
   weekStart.setDate(selectedDate.getDate() - selectedDate.getDay());
@@ -550,30 +582,48 @@ function CalendarPage({
     date.setDate(weekStart.getDate() + index);
     return dateKey(date);
   });
-  const weekRangeLaneEnds: number[] = [];
-  const weekRangeTodos = state.todos
-    .filter((todo) => {
-      const start = todo.startDate || todo.dueDate;
-      const end = todo.endDate || todo.dueDate;
-      return !todo.deletedAt && start && end && start < end && start <= weekDates[6] && end >= weekDates[0];
-    })
-    .map((todo) => {
-      const start = Math.max(0, weekDates.findIndex((date) => date >= (todo.startDate || todo.dueDate)));
-      const end = Math.max(0, weekDates.reduce((last, date, index) => date <= (todo.endDate || todo.dueDate) ? index : last, -1));
-      let lane = weekRangeLaneEnds.findIndex((occupiedUntil) => occupiedUntil < start);
-      if (lane < 0) lane = weekRangeLaneEnds.length;
-      weekRangeLaneEnds[lane] = end;
-      return { todo, start, end, lane };
-    });
   const openDisplayItem = (item: CalendarDisplayItem) => {
-    if (item.recurringId) {
-      setRecurringDialog({
-        event: state.recurringEvents.find((event) => event.id === item.recurringId),
-        occurrenceDate: item.occurrenceDate,
-      });
+    if (item.todoId) {
+      const todo = state.todos.find((value) => value.id === item.todoId);
+      if (!todo) return;
+      if (item.type === "progress") {
+        setProgressEditor(todo);
+      } else if (item.type === "paused-hint") {
+        setTodoEditor(todo);
+      } else if (todo.recurrence) {
+        setOccurrenceEditor({
+          todo,
+          occurrenceDate: item.occurrenceDate || item.date,
+          displayDate: item.date,
+        });
+      } else if (item.type === "move-hint") {
+        setOccurrenceEditor({
+          todo,
+          occurrenceDate: item.occurrenceDate || item.date,
+          displayDate: item.date,
+        });
+      } else {
+        setTodoEditor(todo);
+      }
       return;
     }
-    setDialog({ type: item.type, item });
+    setDialog({ item: item as CalendarItem });
+  };
+  const openNote = (date = selected) => {
+    setSelected(date);
+    setPopover(null);
+    setDialog({});
+  };
+  const toggleCalendarTodo = (item: CalendarDisplayItem) => {
+    if (!item.todoId || !item.occurrenceDate) return;
+    setState((current) => ({
+      ...current,
+      todos: current.todos.map((todo) =>
+        todo.id === item.todoId
+          ? toggleTodoCompletion(todo, item.occurrenceDate!)
+          : todo,
+      ),
+    }));
   };
   const shiftCalendar = (direction: number) => {
     if (calendarView === "month") {
@@ -586,64 +636,19 @@ function CalendarPage({
     setMonth(new Date(next.getFullYear(), next.getMonth(), 1));
   };
   const save = (item: CalendarItem) =>
-    setState((s) =>
-      item.type === "todo"
-        ? {
-            ...s,
-            todos: s.todos.some((x) => x.id === item.id)
-              ? s.todos.map((x) =>
-                  x.id === item.id
-                    ? {
-                        ...x,
-                        title: item.title,
-                        color: item.color,
-                      }
-                    : x,
-                )
-              : [
-                  ...s.todos,
-                  {
-                    id: item.id,
-                    title: item.title,
-                    description: "",
-                    status: "todo",
-                    color: item.color,
-                    dueDate: item.date,
-                    startDate: item.date,
-                    endDate: item.date,
-                    position: s.todos.filter(
-                      (x) => !x.deletedAt && x.status === "todo",
-                    ).length,
-                  },
-                ],
-          }
-        : {
-            ...s,
-            calendarItems: s.calendarItems.some((x) => x.id === item.id)
-              ? s.calendarItems.map((x) => (x.id === item.id ? item : x))
-              : [...s.calendarItems, item],
-          },
-    );
+    setState((s) => ({
+      ...s,
+      calendarItems: s.calendarItems.some((x) => x.id === item.id)
+        ? s.calendarItems.map((x) => (x.id === item.id ? item : x))
+        : [...s.calendarItems, item],
+    }));
   const remove = (item: CalendarItem) =>
-    setState((s) =>
-      item.type === "todo"
-        ? {
-            ...s,
-            todos: s.todos.map((x) =>
-              x.id === item.id
-                ? { ...x, deletedAt: new Date().toISOString() }
-                : x,
-            ),
-          }
-        : {
-            ...s,
-            calendarItems: s.calendarItems.map((x) =>
-              x.id === item.id
-                ? { ...x, deletedAt: new Date().toISOString() }
-                : x,
-            ),
-          },
-    );
+    setState((s) => ({
+      ...s,
+      calendarItems: s.calendarItems.map((x) =>
+        x.id === item.id ? { ...x, deletedAt: new Date().toISOString() } : x,
+      ),
+    }));
   return (
     <div className="page calendar-page">
       <div className="page-tools">
@@ -668,7 +673,7 @@ function CalendarPage({
         </div>
         <div className="calendar-tools">
           <button className="secondary" onClick={() => setCalendarData(true)}>
-            ◫ 管理生日與假日／固定行程
+            ◫ 管理生日與假日
           </button>
           <button
             className="secondary"
@@ -700,31 +705,26 @@ function CalendarPage({
                 (item) => !item.deletedAt && birthdayOnDate(item, d),
               ),
               weekend = d.getDay() === 0 || d.getDay() === 6;
+            const openDate = (target: HTMLElement) => {
+              const r = target.getBoundingClientRect();
+              setSelected(key);
+              setPopover({
+                x: Math.min(innerWidth - 340, Math.max(235, r.left)),
+                y: r.bottom + 360 > innerHeight ? Math.max(10, r.top - 330) : r.bottom + 8,
+              });
+            };
             return (
-              <button
-                aria-label={key}
+              <div
                 key={`${key}-${i}`}
                 style={{
                   gridColumn: `${(i % 7) + 1}`,
                   gridRow: `${Math.floor(i / 7) + 1}`,
                 }}
-                className={`${c.offset ? "other" : ""} ${key === todayKey ? "today" : ""} ${weekend ? "weekend" : ""} ${holiday?.type === "national" ? "holiday" : ""} ${holiday?.type === "makeup" ? "makeup-day" : ""}`}
-                onClick={(e) => {
-                  const r = e.currentTarget.getBoundingClientRect();
-                  setSelected(key);
-                  setPopover({
-                    x: Math.min(innerWidth - 340, Math.max(235, r.left)),
-                    y:
-                      r.bottom + 360 > innerHeight
-                        ? Math.max(10, r.top - 330)
-                        : r.bottom + 8,
-                  });
-                }}
+                className={`calendar-day-cell ${c.offset ? "other" : ""} ${key === todayKey ? "today" : ""} ${weekend ? "weekend" : ""} ${holiday?.type === "national" ? "holiday" : ""} ${holiday?.type === "makeup" ? "makeup-day" : ""}`}
               >
-                <div className="day-heading">
-                  <b>{c.day}</b>
-                  <em>{lunar.shortLabel}</em>
-                </div>
+                <button type="button" className="day-select" aria-label={key} onClick={(e) => openDate(e.currentTarget)}>
+                  <span className="day-heading"><b>{c.day}</b><em>{lunar.shortLabel}</em></span>
+                </button>
                 {holiday && (
                   <small className={`calendar-special ${holiday.type}`}>
                     {holiday.name}
@@ -738,49 +738,25 @@ function CalendarPage({
                     {birthday.calendar === "lunar" ? "☾" : "🎂"} {birthday.name}
                   </small>
                 ))}
-                {items
-                  .filter(
-                    (x) =>
-                      !(
-                        x.type === "todo" &&
-                        x.rangeStart &&
-                        x.rangeEnd &&
-                        x.rangeStart < x.rangeEnd
-                      ),
-                  )
-                  .slice(0, 2)
-                  .map((x) => (
-                    <small
-                      key={x.id}
-                      title={x.title}
-                      className={`${x.color} ${x.completed ? "calendar-todo-complete" : ""}`}
-                      style={paletteStyle(x.color)}
-                    >
-                      {x.title}
-                    </small>
+                <div className="calendar-day-entries">
+                  {items.map((item) => (
+                    <CalendarEntryControl
+                      key={item.id}
+                      item={item}
+                      className="calendar-month-entry"
+                      onOpen={openDisplayItem}
+                      onToggle={toggleCalendarTodo}
+                    />
                   ))}
-              </button>
+                </div>
+              </div>
             );
           })}
-          {calendarRangeBars.filter((bar) => bar.lane < 3).map(({ todo, weekIndex, startColumn, endColumn, lane }) => (
-            <div
-              key={`${todo.id}-${weekIndex}`}
-              className={`calendar-range-bar ${todo.color} ${todo.status === "done" ? "completed" : ""}`}
-              title={`${todo.title}（${todo.startDate || todo.dueDate}～${todo.endDate || todo.dueDate}）`}
-              style={{
-                gridColumn: `${startColumn + 1} / ${endColumn + 2}`,
-                gridRow: `${weekIndex + 1}`,
-                marginBottom: `${8 + lane * 24}px`,
-                ...paletteStyle(todo.color),
-              }}
-            >
-              <span>{todo.title}</span>
-            </div>
-          ))}
         </div>
       </div> : calendarView === "week" ? (
         <div className="calendar-week-view panel">
           <div className="calendar-week-heads">
+            <div className="calendar-week-gutter" aria-hidden="true" />
             {weekDates.map((date) => {
               const day = new Date(`${date}T12:00:00`);
               return (
@@ -788,45 +764,31 @@ function CalendarPage({
                   <button type="button" onClick={(event) => { setSelected(date); setPopover({ x: event.currentTarget.getBoundingClientRect().left, y: event.currentTarget.getBoundingClientRect().bottom }); }}>
                     <b>{day.getDate()}</b><span>{["日", "一", "二", "三", "四", "五", "六"][day.getDay()]}</span>
                   </button>
+                  <button type="button" className="calendar-week-add-note" aria-label={`新增 ${date} 記事`} title="新增記事" onClick={() => openNote(date)}>＋</button>
                 </header>
               );
             })}
           </div>
-          <div className="calendar-week-all-day-row" style={{ "--range-lanes": weekRangeLaneEnds.length } as CSSProperties}>
+          <div className="calendar-week-all-day-row">
             <div className="calendar-week-all-day-cells">
+              <div className="calendar-week-gutter calendar-week-all-day-label">全天</div>
               {weekDates.map((date) => {
-                const allDay = itemsForDate(date).filter((item) => !item.time && !(item.rangeStart && item.rangeEnd && item.rangeStart < item.rangeEnd));
+                const allDay = itemsForDate(date).filter((item) => !item.time);
                 return (
                   <div className="calendar-all-day" key={date}>
-                    <small>全天</small>
                     {allDay.map((item) => (
-                      <button type="button" className="calendar-view-item" key={item.id} style={paletteStyle(item.color)} onClick={() => openDisplayItem(item)}>
-                        <span>{item.title}</span>
-                      </button>
+                      <CalendarEntryControl key={item.id} item={item} className="calendar-view-item" onOpen={openDisplayItem} onToggle={toggleCalendarTodo} />
                     ))}
                   </div>
                 );
               })}
             </div>
-            <div className="calendar-week-ranges" aria-label="連續待辦事項">
-              {weekRangeTodos.map(({ todo, start, end, lane }) => (
-                <button
-                  type="button"
-                  key={todo.id}
-                  className={`calendar-week-range ${todo.status === "done" ? "completed" : ""}`}
-                  style={{ ...paletteStyle(todo.color), gridColumn: `${start + 1} / ${end + 2}`, gridRow: `${lane + 1}` }}
-                  title={`${todo.title}（${todo.startDate || todo.dueDate}～${todo.endDate || todo.dueDate}）`}
-                  onClick={() => openDisplayItem({ id: todo.id, type: "todo", date: todo.startDate || todo.dueDate, title: todo.title, time: "", color: todo.color, rangeStart: todo.startDate || todo.dueDate, rangeEnd: todo.endDate || todo.dueDate, completed: todo.status === "done" })}
-                >
-                  {todo.title}
-                </button>
-              ))}
-            </div>
           </div>
           <div className="calendar-week-timelines">
+            {calendarTimelineHours("calendar-week-time-axis")}
             {weekDates.map((date) => (
               <section key={date} className={date === todayKey ? "today" : ""}>
-                {calendarTimeline(itemsForDate(date), "calendar-view-item", openDisplayItem)}
+                {calendarTimeline(itemsForDate(date), "calendar-view-item", openDisplayItem, toggleCalendarTodo, false)}
               </section>
             ))}
           </div>
@@ -835,19 +797,16 @@ function CalendarPage({
         <div className="calendar-day-view panel">
           <header><strong>{dateLabel(selected)}</strong><span>{selectedItems.length} 項安排</span></header>
           <div className="calendar-day-actions">
-            <button type="button" onClick={() => setDialog({ type: "note" })}>＋ 新增記事</button>
-            <button type="button" onClick={() => setDialog({ type: "todo" })}>＋ 新增待辦</button>
+            <button type="button" onClick={() => openNote()}>＋ 新增記事</button>
           </div>
           <div className="calendar-all-day calendar-day-all-day">
             <strong>全天</strong>
             {selectedItems.filter((item) => !item.time).map((item) => (
-              <button type="button" className="calendar-day-item" key={item.id} style={paletteStyle(item.color)} onClick={() => openDisplayItem(item)}>
-                <span>{item.title}</span><small>{item.type === "todo" ? "待辦" : "記事"}</small>
-              </button>
+              <CalendarEntryControl key={item.id} item={item} className="calendar-day-item" onOpen={openDisplayItem} onToggle={toggleCalendarTodo} />
             ))}
           </div>
           <div className="calendar-day-hours">
-            {calendarTimeline(selectedItems, "calendar-day-item", openDisplayItem)}
+            {calendarTimeline(selectedItems, "calendar-day-item", openDisplayItem, toggleCalendarTodo)}
           </div>
         </div>
       )}
@@ -896,31 +855,19 @@ function CalendarPage({
             ))}
             {selectedItems.length ? (
               selectedItems.map((item) => (
-                <div key={item.id}>
+                <div className="calendar-pop-row" key={item.id}>
                   <i className={`dot ${item.color}`}></i>
-                  <button
-                    className="item-text"
-                    onClick={() =>
-                      item.recurringId
-                        ? setRecurringDialog({
-                            event: state.recurringEvents.find(
-                              (event) => event.id === item.recurringId,
-                            ),
-                            occurrenceDate: item.occurrenceDate,
-                          })
-                        : setDialog({ type: item.type, item })
-                    }
-                  >
-                    <small>
-                      {item.type === "todo" ? "待辦" : item.time ? `${item.time}${item.endTime ? `–${item.endTime}` : ""}` : "記事"}
-                    </small>
-                    <span>{item.title}</span>
-                  </button>
-                  {!item.recurringId && (
+                  <CalendarEntryControl
+                    item={item}
+                    showTime
+                    onOpen={openDisplayItem}
+                    onToggle={toggleCalendarTodo}
+                  />
+                  {item.type === "note" && (
                     <button
                       aria-label={`刪除 ${item.title}`}
                       className="delete"
-                      onClick={() => remove(item)}
+                      onClick={() => remove(item as CalendarItem)}
                     >
                       ×
                     </button>
@@ -933,11 +880,8 @@ function CalendarPage({
             ) : null}
           </div>
           <div className="pop-add">
-            <button onClick={() => setDialog({ type: "note" })}>
+            <button onClick={() => openNote()}>
               ＋ 新增記事
-            </button>
-            <button onClick={() => setDialog({ type: "todo" })}>
-              ＋ 新增待辦
             </button>
           </div>
           <button className="diary-jump" onClick={() => openDiary(selected)}>
@@ -949,7 +893,6 @@ function CalendarPage({
         <CalendarEditor
           date={selected}
           value={dialog.item}
-          type={dialog.type}
           onClose={() => setDialog(null)}
           onSave={(item) => {
             save(item);
@@ -962,52 +905,52 @@ function CalendarPage({
         <CalendarDataModal
           state={state}
           setState={setState}
-          selectedDate={selected}
           onClose={() => setCalendarData(false)}
         />
       )}
-      {recurringDialog && (
-        <RecurringEventEditor
-          value={recurringDialog.event}
-          occurrenceDate={recurringDialog.occurrenceDate || selected}
-          onClose={() => setRecurringDialog(null)}
-          onSave={(event) => {
+      {todoEditor !== undefined && (
+        <TodoEditor
+          value={todoEditor}
+          onClose={() => setTodoEditor(undefined)}
+          onSave={(todo) => {
             setState((current) => ({
               ...current,
-              recurringEvents: current.recurringEvents.some(
-                (item) => item.id === event.id,
-              )
-                ? current.recurringEvents.map((item) =>
-                    item.id === event.id ? event : item,
-                  )
-                : [...current.recurringEvents, event],
+              todos: current.todos.some((item) => item.id === todo.id)
+                ? current.todos.map((item) => item.id === todo.id
+                    ? { ...todo, pausePeriods: changeTodoStatus(item, todo.status).pausePeriods }
+                    : item)
+                : [...current.todos, todo],
             }));
-            setRecurringDialog(null);
+            setTodoEditor(undefined);
           }}
-          onDeleteOccurrence={(event, date) => {
-            setState((current) => ({
-              ...current,
-              recurringEvents: current.recurringEvents.map((item) =>
-                item.id === event.id
-                  ? {
-                      ...item,
-                      exceptions: [...new Set([...item.exceptions, date])],
-                    }
-                  : item,
-              ),
-            }));
-            setRecurringDialog(null);
+        />
+      )}
+      {progressEditor && (
+        <ProgressTaskDetail
+          todo={state.todos.find((item) => item.id === progressEditor.id) || progressEditor}
+          onClose={() => setProgressEditor(null)}
+          onEdit={() => {
+            setTodoEditor(progressEditor);
+            setProgressEditor(null);
           }}
-          onDeleteSeries={(event) => {
+          onSave={(todo) => setState((current) => ({
+            ...current,
+            todos: current.todos.map((item) => item.id === todo.id ? todo : item),
+          }))}
+        />
+      )}
+      {occurrenceEditor && (
+        <TodoOccurrenceEditor
+          todo={occurrenceEditor.todo}
+          occurrenceDate={occurrenceEditor.occurrenceDate}
+          displayDate={occurrenceEditor.displayDate}
+          onClose={() => setOccurrenceEditor(null)}
+          onSave={(todo) => {
             setState((current) => ({
               ...current,
-              recurringEvents: current.recurringEvents.map((item) =>
-                item.id === event.id
-                  ? { ...item, deletedAt: new Date().toISOString() }
-                  : item,
-              ),
+              todos: current.todos.map((item) => item.id === todo.id ? todo : item),
             }));
-            setRecurringDialog(null);
+            setOccurrenceEditor(null);
           }}
         />
       )}
@@ -1018,36 +961,34 @@ function CalendarPage({
 function CalendarEditor({
   date,
   value,
-  type,
   onClose,
   onSave,
 }: {
   date: string;
   value?: CalendarItem;
-  type: CalendarItemType;
   onClose: () => void;
   onSave: (v: CalendarItem) => void;
 }) {
   const [form, setForm] = useState<CalendarItem>(
     value || {
       id: makeId("event"),
-      type,
+      type: "note",
       date,
       title: "",
       time: "",
       endTime: "",
-      color: type === "todo" ? "amber" : "violet",
+      color: "violet",
     },
   );
   const valid = Boolean(
     form.date &&
       form.title.trim() &&
-      (type === "todo" || (form.time && form.endTime && form.time < form.endTime)),
+      form.time && form.endTime && form.time < form.endTime,
   );
   return (
     <Modal
       eyebrow="CALENDAR"
-      title={`${value ? "編輯" : "新增"}${type === "todo" ? "待辦" : "記事"}`}
+      title={`${value ? "編輯" : "新增"}記事`}
       onClose={onClose}
       footer={
         <>
@@ -1079,8 +1020,7 @@ function CalendarEditor({
           placeholder="例如：下午去復健"
         />
       </Field>
-      {type === "note" && (
-        <div className="field-row">
+      <div className="field-row">
           <Field label="開始時間">
             <input
               type="time"
@@ -1096,8 +1036,7 @@ function CalendarEditor({
               onChange={(e) => setForm({ ...form, endTime: e.target.value })}
             />
           </Field>
-        </div>
-      )}
+      </div>
       <Field label="顏色">
         <div className="color-picks">
           {colors.map((c) => (
@@ -1125,6 +1064,17 @@ const columns: Array<[TodoStatus, string]> = [
 ];
 const activeColumns = columns;
 const statusName = Object.fromEntries(columns) as Record<TodoStatus, string>;
+const weekdayLabels = ["日", "一", "二", "三", "四", "五", "六"];
+function recurrenceSummary(rule?: RecurrenceRuleSegment) {
+  if (!rule) return "重複待辦";
+  const repeat = rule.frequency === "daily"
+    ? "每日"
+    : rule.frequency === "weekly"
+      ? `每週${(rule.weekdays?.length ? rule.weekdays : []).slice().sort((a, b) => a - b).map((day) => ` ${weekdayLabels[day]}`).join("、") || ""}`
+      : `每月 ${rule.dayOfMonth || 1} 日`;
+  const time = rule.startTime ? ` · ${rule.startTime}${rule.endTime ? `–${rule.endTime}` : ""}` : " · 全天";
+  return `${repeat}${time} · ${rule.untilDate ? `至 ${rule.untilDate}` : "永不結束"}`;
+}
 function TodoPage({
   state,
   setState,
@@ -1133,6 +1083,7 @@ function TodoPage({
   setState: StateSetter;
 }) {
   const [editing, setEditing] = useState<Todo | null | undefined>(undefined);
+  const [progressTaskId, setProgressTaskId] = useState<string | null>(null);
   const [showCompleted, setShowCompleted] = useState(false);
   const dragged = useRef(false);
   const pointerDrag = useRef<{
@@ -1150,20 +1101,25 @@ function TodoPage({
   } | null>(null);
   const todos = state.todos.filter((x) => !x.deletedAt);
   const save = (todo: Todo) =>
-    setState((s) => ({
-      ...s,
-      todos: s.todos.some((x) => x.id === todo.id)
-        ? s.todos.map((x) => (x.id === todo.id ? todo : x))
-        : [...s.todos, todo],
-    }));
+    setState((s) => {
+      const existing = s.todos.find((item) => item.id === todo.id);
+      const next = existing
+        ? { ...todo, pausePeriods: changeTodoStatus(existing, todo.status).pausePeriods }
+        : changeTodoStatus(todo, todo.status);
+      return {
+        ...s,
+        todos: existing
+          ? s.todos.map((item) => item.id === todo.id ? next : item)
+          : [...s.todos, next],
+      };
+    });
   const move = (id: string, status: TodoStatus) =>
     setState((s) => ({
       ...s,
       todos: s.todos.map((x) =>
         x.id === id
           ? {
-              ...x,
-              status,
+              ...changeTodoStatus(x, status),
               archivedAt: undefined,
               position: s.todos.filter(
                 (t) => !t.deletedAt && t.status === status,
@@ -1218,7 +1174,7 @@ function TodoPage({
     if (current.active) {
       const status = statusAt(e.clientX, e.clientY);
       if (status === "archive") {
-        setState((state) => ({ ...state, todos: state.todos.map((todo) => todo.id === current.id ? { ...todo, status: "done", archivedAt: new Date().toISOString() } : todo) }));
+        setState((state) => ({ ...state, todos: state.todos.map((todo) => todo.id === current.id ? { ...changeTodoStatus(todo, "done"), archivedAt: new Date().toISOString() } : todo) }));
       } else if (status) move(current.id, status);
       dragged.current = true;
     }
@@ -1273,11 +1229,15 @@ function TodoPage({
             <div className="todo-list">
               {todos
                 .filter((x) => x.status === status && !x.archivedAt)
-                .sort((a, b) => a.position - b.position)
+                .sort((a, b) =>
+                  status === "doing" && isMultiDayTodo(a) !== isMultiDayTodo(b)
+                    ? isMultiDayTodo(a) ? 1 : -1
+                    : a.position - b.position,
+                )
                 .map((todo) => (
                   <article
                     key={todo.id}
-                    className={`todo-card ${todo.color} ${status === "done" ? "completed" : ""}`}
+                    className={`todo-card ${todo.color} ${status === "done" ? "completed" : ""} ${isMultiDayTodo(todo) ? "multi-day" : ""} ${todo.kind === "progress" ? "progress-task" : ""}`}
                     style={paletteStyle(todo.color)}
                     onPointerDown={(e) => pointerDown(e, todo)}
                     onPointerMove={pointerMove}
@@ -1288,16 +1248,28 @@ function TodoPage({
                         dragged.current = false;
                         return;
                       }
-                      setEditing(todo);
+                      if (todo.kind === "progress") setProgressTaskId(todo.id);
+                      else setEditing(todo);
                     }}
                   >
                     <small>
-                      {todo.startDate
+                      {todo.kind === "progress"
+                        ? todo.dueDate ? `期限 ${todo.dueDate}` : "長期進度任務"
+                        : todo.recurrence
+                          ? recurrenceSummary(todo.recurrence.rules[0])
+                          : todo.startDate
                         ? `${todo.startDate}${todo.endDate && todo.endDate !== todo.startDate ? ` → ${todo.endDate}` : ""}`
                         : "沒有期限"}
                     </small>
                     <h4>{todo.title}</h4>
-                    {todo.description && <p>{todo.description}</p>}
+                    {todo.kind === "progress" ? (
+                      todo.progressLogs?.length ? (
+                        <p className="progress-preview">{todo.progressLogs.slice().sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt))[0].text}</p>
+                      ) : <p className="progress-preview muted">還沒有進度紀錄</p>
+                    ) : todo.description && <p>{todo.description}</p>}
+                    {isMultiDayTodo(todo) && (
+                      <small className="multi-day-progress">{getMultiDayCompletedCount(todo)}/{getMultiDayLength(todo)} 天完成</small>
+                    )}
                     <footer>
                       <span>{statusName[status]}</span>
                       <span className="todo-card-actions">
@@ -1350,6 +1322,21 @@ function TodoPage({
           }}
         />
       )}
+      {progressTaskId && (
+        <ProgressTaskDetail
+          todo={todos.find((todo) => todo.id === progressTaskId)!}
+          onClose={() => setProgressTaskId(null)}
+          onEdit={() => {
+            const todo = todos.find((item) => item.id === progressTaskId);
+            if (todo) setEditing(todo);
+            setProgressTaskId(null);
+          }}
+          onSave={(todo) => setState((current) => ({
+            ...current,
+            todos: current.todos.map((item) => item.id === todo.id ? todo : item),
+          }))}
+        />
+      )}
     </div>
   );
 }
@@ -1375,9 +1362,96 @@ function TodoEditor({
       position: 99,
     },
   );
-  const validDates = Boolean(
-    form.startDate && form.endDate && form.startDate <= form.endDate,
+  const firstRule = value?.recurrence?.rules[0];
+  const [kind, setKind] = useState<TodoKind>(value?.kind || "task");
+  const [frequency, setFrequency] = useState<"none" | RecurrenceFrequency>(firstRule?.frequency || "none");
+  const [weekdays, setWeekdays] = useState<number[]>(firstRule?.weekdays || []);
+  const [dayOfMonth, setDayOfMonth] = useState(firstRule?.dayOfMonth || 1);
+  const [repeatFrom, setRepeatFrom] = useState(firstRule?.fromDate || value?.startDate || todayKey);
+  const [repeatUntil, setRepeatUntil] = useState(firstRule?.untilDate || "");
+  const [repeatForever, setRepeatForever] = useState(!firstRule?.untilDate);
+  const [hasFixedTime, setHasFixedTime] = useState(Boolean(firstRule?.startTime || value?.startTime));
+  const [startTime, setStartTime] = useState(firstRule?.startTime || value?.startTime || "");
+  const [endTime, setEndTime] = useState(firstRule?.endTime || value?.endTime || "");
+  const startDate = form.startDate || "";
+  const endDate = form.endDate || "";
+  const isRange = frequency === "none" && startDate && endDate && startDate < endDate;
+  const dateRangeValid = !startDate || !endDate || startDate <= endDate;
+  const timeValid = isRange || !hasFixedTime || Boolean(startTime && (!endTime || endTime > startTime));
+  const recurrenceValid = frequency === "none" || Boolean(
+    repeatFrom &&
+      (repeatForever || (repeatUntil && repeatUntil >= repeatFrom)) &&
+      (frequency !== "weekly" || weekdays.length > 0) &&
+      (frequency !== "monthly" || (dayOfMonth >= 1 && dayOfMonth <= 31)),
   );
+  const valid = Boolean(
+    form.title.trim() &&
+      (kind === "progress" || (dateRangeValid && recurrenceValid && timeValid && (frequency !== "none" || !hasFixedTime || startDate || endDate))),
+  );
+  const toggleWeekday = (day: number) => setWeekdays((current) =>
+    current.includes(day) ? current.filter((value) => value !== day) : [...current, day].sort((a, b) => a - b),
+  );
+  const commit = () => {
+    const common = {
+      ...form,
+      title: form.title.trim(),
+      kind,
+      completedDates: form.completedDates || [],
+    };
+    if (kind === "progress") {
+      onSave({
+        ...common,
+        kind: "progress",
+        dueDate: form.dueDate || endDate || startDate,
+        startDate: form.dueDate || endDate || startDate,
+        endDate: form.dueDate || endDate || startDate,
+        startTime: undefined,
+        endTime: undefined,
+        recurrence: undefined,
+        progressLogs: form.progressLogs || [],
+      });
+      return;
+    }
+    if (frequency !== "none") {
+      const rule: RecurrenceRuleSegment = {
+        fromDate: repeatFrom,
+        ...(repeatForever ? {} : { untilDate: repeatUntil }),
+        frequency,
+        ...(frequency === "weekly" ? { weekdays } : {}),
+        ...(frequency === "monthly" ? { dayOfMonth } : {}),
+        ...(hasFixedTime ? { startTime, ...(endTime ? { endTime } : {}) } : {}),
+        color: form.color,
+      };
+      onSave({
+        ...common,
+        status: isRange ? "doing" : form.status,
+        dueDate: repeatForever ? "" : repeatUntil,
+        startDate: repeatFrom,
+        endDate: repeatForever ? "" : repeatUntil,
+        startTime: undefined,
+        endTime: undefined,
+        recurrence: {
+          rules: [rule],
+          exceptions: form.recurrence?.exceptions || [],
+          overrides: form.recurrence?.overrides || {},
+        },
+      });
+      return;
+    }
+    const normalizedStart = startDate || endDate;
+    const normalizedEnd = endDate || startDate;
+    const multiDay = Boolean(normalizedStart && normalizedEnd && normalizedStart < normalizedEnd);
+    onSave({
+      ...common,
+      status: multiDay && form.status !== "done" ? "doing" : form.status,
+      startDate: normalizedStart,
+      endDate: normalizedEnd,
+      dueDate: normalizedEnd || normalizedStart,
+      startTime: hasFixedTime && !multiDay ? startTime : undefined,
+      endTime: hasFixedTime && !multiDay && endTime ? endTime : undefined,
+      recurrence: undefined,
+    });
+  };
   return (
     <Modal
       eyebrow="TO DO"
@@ -1385,16 +1459,10 @@ function TodoEditor({
       onClose={onClose}
       footer={
         <>
-          <span>請填標題、起始日與截止日</span>
+          <span>{kind === "progress" ? "進度以文字紀錄" : "日期與時間可依需要設定"}</span>
           <button
-            disabled={!form.title.trim() || !validDates}
-            onClick={() =>
-              onSave({
-                ...form,
-                title: form.title.trim(),
-                dueDate: form.endDate || form.startDate || "",
-              })
-            }
+            disabled={!valid}
+            onClick={commit}
           >
             儲存
           </button>
@@ -1407,6 +1475,12 @@ function TodoEditor({
           value={form.title}
           onChange={(e) => setForm({ ...form, title: e.target.value })}
         />
+      </Field>
+      <Field label="任務類型">
+        <select value={kind} onChange={(e) => setKind(e.target.value as TodoKind)}>
+          <option value="task">一般待辦</option>
+          <option value="progress">長期進度任務</option>
+        </select>
       </Field>
       <Field label="描述">
         <textarea
@@ -1428,31 +1502,76 @@ function TodoEditor({
           ))}
         </select>
       </Field>
-      <div className="field-row">
-        <Field label="起始日">
+      {kind === "progress" ? (
+        <Field label="期限（選填）">
           <input
             type="date"
-            aria-label="起始日"
-            value={form.startDate || form.dueDate || ""}
-            onChange={(e) =>
-              setForm({
-                ...form,
-                startDate: e.target.value,
-                endDate: form.endDate || e.target.value,
-              })
-            }
+            aria-label="期限"
+            value={form.dueDate || ""}
+            onChange={(e) => setForm({ ...form, dueDate: e.target.value })}
           />
         </Field>
-        <Field label="截止日">
-          <input
-            type="date"
-            aria-label="截止日"
-            min={form.startDate || undefined}
-            value={form.endDate || form.dueDate || ""}
-            onChange={(e) => setForm({ ...form, endDate: e.target.value })}
-          />
-        </Field>
-      </div>
+      ) : (
+        <>
+          <Field label="重複頻率">
+            <select aria-label="重複頻率" value={frequency} onChange={(e) => {
+              const next = e.target.value as "none" | RecurrenceFrequency;
+              setFrequency(next);
+              if (next === "weekly" && weekdays.length === 0) setWeekdays([new Date(`${repeatFrom}T12:00:00`).getDay()]);
+            }}>
+              <option value="none">不重複</option>
+              <option value="daily">每日</option>
+              <option value="weekly">每週</option>
+              <option value="monthly">每月</option>
+            </select>
+          </Field>
+          {frequency === "none" ? (
+            <div className="field-row">
+              <Field label="開始日期（選填）">
+                <input type="date" aria-label="起始日" value={startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value, dueDate: form.dueDate || e.target.value })} />
+              </Field>
+              <Field label="截止日期（選填）">
+                <input type="date" aria-label="截止日" min={startDate || undefined} value={endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value, dueDate: e.target.value })} />
+              </Field>
+            </div>
+          ) : (
+            <>
+              <div className="field-row">
+                <Field label="開始日期">
+                  <input type="date" aria-label="重複開始日期" value={repeatFrom} onChange={(e) => setRepeatFrom(e.target.value)} />
+                </Field>
+                <Field label="重複期限">
+                  <select aria-label="重複期限" value={repeatForever ? "forever" : "until"} onChange={(e) => setRepeatForever(e.target.value === "forever")}>
+                    <option value="forever">永不結束</option>
+                    <option value="until">截止日</option>
+                  </select>
+                </Field>
+              </div>
+              {!repeatForever && <Field label="截止日期"><input type="date" aria-label="重複截止日期" min={repeatFrom} value={repeatUntil} onChange={(e) => setRepeatUntil(e.target.value)} /></Field>}
+              {frequency === "weekly" && (
+                <Field label="重複星期">
+                  <div className="weekday-picks" role="group" aria-label="重複星期">
+                    {weekdayLabels.map((label, day) => <button type="button" key={day} aria-pressed={weekdays.includes(day)} className={weekdays.includes(day) ? "selected" : ""} onClick={() => toggleWeekday(day)}>週{label}</button>)}
+                  </div>
+                </Field>
+              )}
+              {frequency === "monthly" && <Field label="每月日期"><input aria-label="每月日期" type="number" min={1} max={31} value={dayOfMonth} onChange={(e) => setDayOfMonth(Math.max(1, Math.min(31, Number(e.target.value) || 1)))} /><small className="field-hint">當月沒有該日期時，改在月底出現。</small></Field>}
+            </>
+          )}
+          {!(frequency === "none" && isRange) && (
+            <label className="inline-check">
+              <input type="checkbox" checked={hasFixedTime} onChange={(e) => setHasFixedTime(e.target.checked)} />
+              <span>{frequency === "none" ? "設定固定時間，顯示在行事曆時間軸" : "設定固定時間，顯示在週／日時間軸"}</span>
+            </label>
+          )}
+          {hasFixedTime && !(frequency === "none" && isRange) && (
+            <div className="field-row">
+              <Field label="開始時間"><input aria-label="待辦開始時間" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} /></Field>
+              <Field label="結束時間（選填）"><input aria-label="待辦結束時間" type="time" min={startTime || undefined} value={endTime} onChange={(e) => setEndTime(e.target.value)} /></Field>
+            </div>
+          )}
+        </>
+      )}
       <Field label="顏色">
         <div className="color-picks">
           {colors.map((c) => (
@@ -1468,6 +1587,152 @@ function TodoEditor({
           ))}
         </div>
       </Field>
+    </Modal>
+  );
+}
+
+function ProgressTaskDetail({
+  todo,
+  onClose,
+  onEdit,
+  onSave,
+}: {
+  todo: Todo;
+  onClose: () => void;
+  onEdit: () => void;
+  onSave: (todo: Todo) => void;
+}) {
+  const [logs, setLogs] = useState(todo.progressLogs || []);
+  const [draft, setDraft] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const saveLogs = (next: Todo["progressLogs"]) => {
+    setLogs(next || []);
+    onSave({ ...todo, progressLogs: next || [] });
+  };
+  const addLog = () => {
+    if (!draft.trim()) return;
+    saveLogs([
+      ...logs,
+      { id: makeId("progress"), date: todayKey, text: draft.trim(), createdAt: new Date().toISOString() },
+    ]);
+    setDraft("");
+  };
+  const sortedLogs = logs.slice().sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+  return (
+    <Modal
+      eyebrow="LONG-TERM TASK"
+      title={todo.title}
+      onClose={onClose}
+      footer={<><button className="secondary" onClick={onEdit}>編輯任務</button><button onClick={onClose}>完成</button></>}
+    >
+      {todo.description && <p className="progress-task-description">{todo.description}</p>}
+      <section className="progress-log-compose">
+        <Field label={`新增進度紀錄 · ${todayKey}`}>
+          <textarea aria-label="新增進度紀錄" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="記下目前推進到哪裡……" />
+        </Field>
+        <button type="button" disabled={!draft.trim()} onClick={addLog}>新增紀錄</button>
+      </section>
+      <div className="progress-log-list">
+        {sortedLogs.length ? sortedLogs.map((log) => (
+          <article key={log.id} className="progress-log">
+            <header><time>{log.date}{log.updatedAt ? " · 已編輯" : ""}</time><span><button type="button" onClick={() => { setEditingId(log.id); setEditDraft(log.text); }}>編輯</button><button type="button" onClick={() => { if (confirm("確定刪除這筆進度紀錄？")) saveLogs(logs.filter((item) => item.id !== log.id)); }}>刪除</button></span></header>
+            {editingId === log.id ? <><textarea aria-label={`編輯紀錄 ${log.date}`} value={editDraft} onChange={(e) => setEditDraft(e.target.value)} /><div className="progress-log-actions"><button type="button" onClick={() => { saveLogs(logs.map((item) => item.id === log.id ? { ...item, text: editDraft.trim(), updatedAt: new Date().toISOString() } : item)); setEditingId(null); }}>儲存</button><button type="button" onClick={() => setEditingId(null)}>取消</button></div></> : <p>{log.text}</p>}
+          </article>
+        )) : <Empty text="還沒有進度紀錄。" />}
+      </div>
+    </Modal>
+  );
+}
+
+function TodoOccurrenceEditor({
+  todo,
+  occurrenceDate,
+  displayDate,
+  onClose,
+  onSave,
+}: {
+  todo: Todo;
+  occurrenceDate: string;
+  displayDate: string;
+  onClose: () => void;
+  onSave: (todo: Todo) => void;
+}) {
+  const rule = getRuleForDate(todo.recurrence?.rules || [], occurrenceDate);
+  const previousOverride = todo.recurrence?.overrides?.[occurrenceDate] || {};
+  const [title, setTitle] = useState(previousOverride.title || rule?.title || todo.title);
+  const [date, setDate] = useState(previousOverride.movedTo || displayDate);
+  const [startTime, setStartTime] = useState(previousOverride.startTime ?? rule?.startTime ?? "");
+  const [endTime, setEndTime] = useState(previousOverride.endTime ?? rule?.endTime ?? "");
+  const [color, setColor] = useState<PaletteId>(nearestPaletteId(previousOverride.color || rule?.color || todo.color));
+  const [scope, setScope] = useState<"occurrence" | "future" | "series">("occurrence");
+  const valid = Boolean(title.trim() && date && (!startTime || !endTime || endTime > startTime));
+  const save = () => {
+    if (!valid) return;
+    const current = todo.recurrence || { rules: [], exceptions: [], overrides: {} };
+    const timing = startTime ? { startTime, ...(endTime ? { endTime } : {}) } : { startTime: "", endTime: "" };
+    let next: Todo = todo;
+    if (scope === "occurrence") {
+      next = {
+        ...todo,
+        recurrence: {
+          ...current,
+          overrides: {
+            ...current.overrides,
+            [occurrenceDate]: {
+              ...previousOverride,
+              title: title.trim() === (rule?.title || todo.title) ? undefined : title.trim(),
+              ...timing,
+              color,
+              movedTo: date === occurrenceDate ? undefined : date,
+            },
+          },
+        },
+      };
+    } else if (scope === "future" && rule) {
+      const split = addRuleFromDate(current, occurrenceDate, {
+        frequency: rule.frequency,
+        ...(rule.weekdays ? { weekdays: rule.weekdays } : {}),
+        ...(rule.dayOfMonth ? { dayOfMonth: rule.dayOfMonth } : {}),
+        ...(rule.untilDate ? { untilDate: rule.untilDate } : {}),
+        ...(title.trim() === todo.title ? {} : { title: title.trim() }),
+        ...timing,
+        color,
+      });
+      const overrides = { ...split.overrides };
+      delete overrides[occurrenceDate];
+      if (date !== occurrenceDate) overrides[occurrenceDate] = { movedTo: date };
+      next = { ...todo, recurrence: { ...split, overrides } };
+    } else {
+      const rules = current.rules.map((segment) => ({
+        ...segment,
+        title: title.trim() === todo.title ? undefined : title.trim(),
+        ...timing,
+        color,
+      }));
+      const overrides = Object.fromEntries(Object.entries(current.overrides).map(([key, override]) => [key, {
+        ...(override.movedTo ? { movedTo: override.movedTo } : {}),
+        ...(override.cancelled ? { cancelled: true } : {}),
+      }]));
+      if (date !== occurrenceDate) overrides[occurrenceDate] = { ...(overrides[occurrenceDate] || {}), movedTo: date };
+      next = { ...todo, title: title.trim(), color, recurrence: { ...current, rules, overrides } };
+    }
+    onSave(next);
+  };
+  return (
+    <Modal eyebrow="REPEATING TODO" title="編輯這次出現" onClose={onClose} footer={<><span>預設只套用這一次</span><button disabled={!valid} onClick={save}>儲存</button></>}>
+      <Field label="標題"><input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} /></Field>
+      <Field label="日期"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+      <div className="field-row">
+        <Field label="開始時間（選填）"><input type="time" aria-label="這次開始時間" value={startTime} onChange={(e) => setStartTime(e.target.value)} /></Field>
+        <Field label="結束時間（選填）"><input type="time" aria-label="這次結束時間" min={startTime || undefined} value={endTime} onChange={(e) => setEndTime(e.target.value)} /></Field>
+      </div>
+      <Field label="修改範圍"><select aria-label="修改範圍" value={scope} onChange={(e) => setScope(e.target.value as typeof scope)}>
+        <option value="occurrence">只修改這一次</option>
+        <option value="future">從這次起修改後續</option>
+        <option value="series">修改整個系列的規則／時間</option>
+      </select></Field>
+      <Field label="顏色"><div className="color-picks">{colors.map((item) => <button type="button" key={item} aria-label={paletteItem(item).label} title={paletteItem(item).label} className={`palette-swatch ${color === item ? "selected" : ""}`} style={{ backgroundColor: paletteItem(item).base }} onClick={() => setColor(item)} />)}</div></Field>
     </Modal>
   );
 }
@@ -2239,16 +2504,8 @@ function SettingsPage({
       )
         throw new Error("invalid");
       if (confirm("匯入會取代目前資料，確定繼續嗎？"))
-        setState((current) => ({
-          ...current,
+        setState((current) => normalizeState({
           ...value,
-          birthdays: value.birthdays || [],
-          holidays: value.holidays || current.holidays,
-          albums: value.albums || current.albums,
-          photos: value.photos || [],
-          recurringEvents: value.recurringEvents || [],
-          ledgerEntries: value.ledgerEntries || [],
-          ledgerCategories: value.ledgerCategories || [],
           settings: { ...current.settings, ...value.settings },
         }));
     } catch {
@@ -2258,6 +2515,18 @@ function SettingsPage({
   return (
     <div className="page settings-grid">
       <Panel title="外觀">
+        <Field label="顯示名稱">
+          <input
+            aria-label="顯示名稱"
+            value={settings.userName}
+            onChange={(event) =>
+              setState((current) => ({
+                ...current,
+                settings: { ...current.settings, userName: event.target.value },
+              }))
+            }
+          />
+        </Field>
         <Field label="主題">
           <select
             value={settings.theme}
@@ -2298,7 +2567,7 @@ function SettingsPage({
         </Field>
         <p className="setting-hint">調整介面文字與控制項的閱讀尺寸，不會改變資料內容。</p>
       </Panel>
-      <Panel title="Q 版月光精靈">
+      <Panel title="月光精靈設定">
         <Field label="顯示">
           <input
             type="checkbox"
@@ -2339,9 +2608,9 @@ function SettingsPage({
             }}
           />
         </Field>
-        <Field label="我們的家">
+        <Field label="自訂聊天網址">
           <input
-            placeholder="貼上『我們的家』對話網址"
+            placeholder="貼上自訂聊天網址"
             value={settings.chatUrl}
             onChange={(e) =>
               setState((s) => ({
@@ -2352,7 +2621,7 @@ function SettingsPage({
           />
         </Field>
         <p className="setting-hint">
-          在瀏覽器開啟你的 ChatGPT 或其他對話網址，複製網址列的完整網址貼到這裡。
+          可貼上外部聊天對話網址；月光精靈只有在你點擊時才會開啟此網址。
         </p>
       </Panel>
       <Panel title="資料與備份">
@@ -2485,7 +2754,7 @@ function SettingsPage({
       <Panel title="隱私">
         <p className="muted">
           月光簿不會自動把日記、筆記或待辦傳送到
-          ChatGPT。只有你點擊月光精靈時，才會開啟設定的網址。
+          外部聊天網站。只有你點擊月光精靈時，才會開啟設定的網址。
         </p>
       </Panel>
       <Panel title="鍵盤快捷鍵">
@@ -2822,7 +3091,7 @@ function Search({
   );
 }
 
-function FloatingSpirit({
+function FloatingMoon({
   state,
   setState,
 }: {
@@ -2861,7 +3130,7 @@ function FloatingSpirit({
     }));
   };
   const pointerUp = async () => {
-    if (drag && !drag.moved && s.chatUrl.trim()) {
+    if (drag && !drag.moved) {
       try {
         if (window.__TAURI_INTERNALS__) {
           const { openUrl } = await import("@tauri-apps/plugin-opener");
@@ -3101,7 +3370,7 @@ export default function App() {
         </Modal>
       )}
       </div>
-      <FloatingSpirit state={state} setState={setState} />
+      <FloatingMoon state={state} setState={setState} />
     </>
   );
 }
