@@ -15,6 +15,7 @@ import {
   type LedgerEntry,
 } from "../data/types";
 import { palette } from "../data/colors";
+import { summarizeExpenses } from "../data/ledger";
 
 type Setter = Dispatch<SetStateAction<AppState>>;
 const money = new Intl.NumberFormat("zh-TW", {
@@ -76,6 +77,15 @@ export default function LedgerPage({
       ),
     [entries],
   );
+  const year = month.slice(0, 4);
+  const monthlyBreakdown = useMemo(
+    () => summarizeExpenses(state.ledgerEntries, categories, month),
+    [state.ledgerEntries, categories, month],
+  );
+  const annualBreakdown = useMemo(
+    () => summarizeExpenses(state.ledgerEntries, categories, year),
+    [state.ledgerEntries, categories, year],
+  );
   const save = (entry: LedgerEntry) =>
     setState((current) => ({
       ...current,
@@ -120,7 +130,9 @@ export default function LedgerPage({
             aria-label="記帳月份"
             type="month"
             value={month}
-            onChange={(e) => setMonth(e.target.value)}
+            onChange={(e) => {
+              if (e.target.value) setMonth(e.target.value);
+            }}
           />
         </label>
         <label className="ledger-filter">
@@ -148,6 +160,9 @@ export default function LedgerPage({
               date: todayKey,
               categoryId:
                 categories.find((x) => x.type === "expense")?.id || "",
+              item: "",
+              shopBrand: "",
+              paymentMethod: "",
               account: "",
               note: "",
               createdAt: new Date().toISOString(),
@@ -238,26 +253,63 @@ export default function LedgerPage({
           <strong>{money.format(summary.income - summary.expense)}</strong>
         </article>
       </div>
-      <div className="panel ledger-list">
+      <p className="ledger-breakdown-hint">
+        支出圖表依所選月份與年度統計全部分類，不受上方列表篩選影響。
+      </p>
+      <div className="ledger-breakdown-grid">
+        <ExpenseBreakdownCard
+          title={`${Number(month.slice(5, 7))} 月支出`}
+          summary={monthlyBreakdown}
+        />
+        <ExpenseBreakdownCard title={`${year} 年支出`} summary={annualBreakdown} />
+      </div>
+      <div className="panel ledger-table-panel">
         {entries.length ? (
-          entries.map((entry) => (
-            <button key={entry.id} onClick={() => setEditing(entry)}>
-              <span>
-                <b>
-                  {categories.find((x) => x.id === entry.categoryId)?.name ||
-                    "未分類"}
-                </b>
-                <small>
-                  {entry.date}
-                  {entry.account ? ` · ${entry.account}` : ""}
-                </small>
-              </span>
-              <strong className={entry.type}>
-                {entry.type === "expense" ? "−" : "+"}
-                {money.format(entry.amount)}
-              </strong>
-            </button>
-          ))
+          <div className="ledger-table-scroll">
+            <table className="ledger-table">
+              <thead>
+                <tr>
+                  <th>消費日期</th>
+                  <th>項目</th>
+                  <th>金額</th>
+                  <th>分類</th>
+                  <th>店家/品牌</th>
+                  <th>支付方式</th>
+                  <th>備註</th>
+                </tr>
+              </thead>
+              <tbody>
+                {entries.map((entry) => (
+                  <tr
+                    key={entry.id}
+                    tabIndex={0}
+                    aria-label={`編輯 ${entry.item || entry.note || "記帳"}`}
+                    onClick={() => setEditing(entry)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setEditing(entry);
+                      }
+                    }}
+                  >
+                    <td>{entry.date}</td>
+                    <td>{entry.item || "—"}</td>
+                    <td className={entry.type}>
+                      {entry.type === "expense" ? "−" : "+"}
+                      {money.format(entry.amount)}
+                    </td>
+                    <td>
+                      {categories.find((category) => category.id === entry.categoryId)
+                        ?.name || "未分類"}
+                    </td>
+                    <td>{entry.shopBrand || "—"}</td>
+                    <td>{entry.paymentMethod || entry.account || "—"}</td>
+                    <td className="ledger-note-cell">{entry.note || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <p className="empty-ledger">這個月還沒有帳目。</p>
         )}
@@ -323,6 +375,60 @@ export default function LedgerPage({
   );
 }
 
+function ExpenseBreakdownCard({
+  title,
+  summary,
+}: {
+  title: string;
+  summary: ReturnType<typeof summarizeExpenses>;
+}) {
+  let currentStop = 0;
+  const segments = summary.categories.map((category) => {
+    const start = currentStop;
+    currentStop += category.percentage;
+    return `${category.color} ${start}% ${currentStop}%`;
+  });
+
+  return (
+    <section className="panel ledger-breakdown" aria-label={title}>
+      <h2>{title}</h2>
+      <div className="ledger-breakdown-content">
+        <div
+          className={`ledger-donut${summary.total ? "" : " is-empty"}`}
+          style={
+            {
+              "--donut-segments": segments.length
+                ? `conic-gradient(${segments.join(", ")})`
+                : "conic-gradient(#b9b1c1 0% 100%)",
+            } as CSSProperties
+          }
+          role="img"
+          aria-label={`${title}合計 ${money.format(summary.total)}`}
+        >
+          <div className="ledger-donut-center">
+            <small>支出合計</small>
+            <strong>{money.format(summary.total)}</strong>
+          </div>
+        </div>
+        {summary.categories.length ? (
+          <ul className="ledger-breakdown-legend">
+            {summary.categories.map((category) => (
+              <li key={category.id}>
+                <i style={{ backgroundColor: category.color }} />
+                <span>{category.name}</span>
+                <b>{money.format(category.amount)}</b>
+                <small>{category.percentage.toFixed(1)}%</small>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="ledger-breakdown-empty">這段期間還沒有支出。</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function LedgerEditor({
   value,
   categories,
@@ -336,7 +442,12 @@ function LedgerEditor({
   onSave: (value: LedgerEntry) => void;
   onDelete: () => void;
 }) {
-  const [form, setForm] = useState(value);
+  const [form, setForm] = useState(() => ({
+    ...value,
+    item: value.item || "",
+    shopBrand: value.shopBrand || "",
+    paymentMethod: value.paymentMethod ?? value.account ?? "",
+  }));
   const choices = categories.filter((x) => x.type === form.type);
   return (
     <div
@@ -372,9 +483,25 @@ function LedgerEditor({
             </select>
           </label>
           <label className="field">
-            <span>金額</span>
+            <span>消費日期</span>
             <input
               autoFocus
+              type="date"
+              value={form.date}
+              onChange={(e) => setForm({ ...form, date: e.target.value })}
+            />
+          </label>
+          <label className="field">
+            <span>項目</span>
+            <input
+              value={form.item || ""}
+              onChange={(e) => setForm({ ...form, item: e.target.value })}
+              placeholder="例如：午餐、月光簿網域"
+            />
+          </label>
+          <label className="field">
+            <span>金額</span>
+            <input
               aria-label="金額"
               type="number"
               min="0"
@@ -383,14 +510,6 @@ function LedgerEditor({
               onChange={(e) =>
                 setForm({ ...form, amount: Number(e.target.value) })
               }
-            />
-          </label>
-          <label className="field">
-            <span>日期</span>
-            <input
-              type="date"
-              value={form.date}
-              onChange={(e) => setForm({ ...form, date: e.target.value })}
             />
           </label>
           <label className="field">
@@ -407,18 +526,27 @@ function LedgerEditor({
             </select>
           </label>
           <label className="field">
-            <span>付款帳戶（可留空）</span>
+            <span>店家/品牌</span>
             <input
-              value={form.account}
-              onChange={(e) => setForm({ ...form, account: e.target.value })}
-              placeholder="例如：現金、信用卡"
+              value={form.shopBrand || ""}
+              onChange={(e) => setForm({ ...form, shopBrand: e.target.value })}
+              placeholder="例如：店名、品牌"
+            />
+          </label>
+          <label className="field">
+            <span>支付方式</span>
+            <input
+              value={form.paymentMethod || ""}
+              onChange={(e) => setForm({ ...form, paymentMethod: e.target.value })}
+              placeholder="例如：現金、信用卡、行動支付"
             />
           </label>
           <label className="field">
             <span>備註</span>
-            <input
+            <textarea
               value={form.note}
               onChange={(e) => setForm({ ...form, note: e.target.value })}
+              rows={2}
             />
           </label>
         </div>
@@ -432,7 +560,9 @@ function LedgerEditor({
           )}
           <button
             disabled={!form.amount || !form.date || !form.categoryId}
-            onClick={() => onSave(form)}
+            onClick={() =>
+              onSave({ ...form, paymentMethod: form.paymentMethod || "", account: form.paymentMethod || "" })
+            }
           >
             儲存
           </button>

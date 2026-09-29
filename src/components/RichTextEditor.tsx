@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties } from "react";
 
 type Props = {
   html?: string;
@@ -7,6 +7,7 @@ type Props = {
   compact?: boolean;
   ariaLabel?: string;
   placeholder?: string;
+  contextualToolbar?: boolean;
 };
 
 const escapeHtml = (value: string) =>
@@ -92,10 +93,12 @@ export default function RichTextEditor({
   compact = false,
   ariaLabel,
   placeholder,
+  contextualToolbar = false,
 }: Props) {
   const editorRef = useRef<HTMLDivElement>(null);
   const lastHtml = useRef("");
   const selectionRef = useRef<Range | null>(null);
+  const [toolbarPosition, setToolbarPosition] = useState<{ left: number; top: number } | null>(null);
   const initialHtml = sanitizeRichText(html?.trim() || textToHtml(text || ""));
 
   useEffect(() => {
@@ -123,11 +126,41 @@ export default function RichTextEditor({
       selection.rangeCount === 0 ||
       !selection.anchorNode ||
       !editor.contains(selection.anchorNode)
-    ) {
-      return;
-    }
+    ) return;
     selectionRef.current = selection.getRangeAt(0).cloneRange();
   };
+  const updateToolbarPosition = () => {
+    if (!contextualToolbar) return;
+    const editor = editorRef.current;
+    const wrapper = editor?.parentElement;
+    const selection = window.getSelection();
+    if (!editor || !wrapper || !selection || selection.rangeCount === 0 || !selection.anchorNode || !editor.contains(selection.anchorNode)) {
+      setToolbarPosition(null);
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    if (range.collapsed || !range.toString()) {
+      setToolbarPosition(null);
+      return;
+    }
+    selectionRef.current = range.cloneRange();
+    const selectionRect = range.getBoundingClientRect();
+    const wrapperRect = wrapper.getBoundingClientRect();
+    const left = Math.max(0, Math.min(wrapperRect.width - 180, selectionRect.left - wrapperRect.left + selectionRect.width / 2 - 85));
+    const above = selectionRect.top - wrapperRect.top - 48;
+    const top = above >= 0 ? above : selectionRect.bottom - wrapperRect.top + 7;
+    setToolbarPosition({ left, top });
+  };
+  useEffect(() => {
+    if (!contextualToolbar) return;
+    const refresh = () => updateToolbarPosition();
+    document.addEventListener("selectionchange", refresh);
+    window.addEventListener("resize", refresh);
+    return () => {
+      document.removeEventListener("selectionchange", refresh);
+      window.removeEventListener("resize", refresh);
+    };
+  }, [contextualToolbar]);
   const restoreSelection = () => {
     const editor = editorRef.current;
     const range = selectionRef.current;
@@ -136,9 +169,7 @@ export default function RichTextEditor({
       !range ||
       !editor.contains(range.startContainer) ||
       !editor.contains(range.endContainer)
-    ) {
-      return;
-    }
+    ) return;
     const selection = window.getSelection();
     if (!selection) return;
     selection.removeAllRanges();
@@ -153,14 +184,24 @@ export default function RichTextEditor({
     document.execCommand(name, false, value);
     emit();
     rememberSelection();
+    window.requestAnimationFrame(updateToolbarPosition);
   };
   const color = (event: ChangeEvent<HTMLInputElement>, name: string) => {
     command(name, event.target.value);
   };
+  const toolbarStyle: CSSProperties | undefined = contextualToolbar && toolbarPosition
+    ? { left: toolbarPosition.left, top: toolbarPosition.top }
+    : undefined;
 
   return (
-    <div className={`rich-text-editor ${compact ? "compact" : ""}`}>
-      <div className="rich-text-toolbar" role="toolbar" aria-label="文字格式">
+    <div className={["rich-text-editor", compact && "compact", contextualToolbar && "contextual"].filter(Boolean).join(" ")}>
+      <div
+        className={["rich-text-toolbar", contextualToolbar && "selection-toolbar", contextualToolbar && !toolbarPosition && "hidden"].filter(Boolean).join(" ")}
+        role="toolbar"
+        aria-label="文字格式"
+        style={toolbarStyle}
+        onMouseDown={(event) => { if ((event.target as HTMLElement).tagName !== "INPUT") event.preventDefault(); }}
+      >
         <button type="button" title="粗體" onMouseDown={(event) => { rememberSelection(); event.preventDefault(); }} onClick={() => command("bold")}>B</button>
         <button type="button" title="斜體" onMouseDown={(event) => { rememberSelection(); event.preventDefault(); }} onClick={() => command("italic")}>I</button>
         <button type="button" title="底線" onMouseDown={(event) => { rememberSelection(); event.preventDefault(); }} onClick={() => command("underline")}>U</button>
@@ -181,9 +222,9 @@ export default function RichTextEditor({
         data-placeholder={placeholder}
         suppressContentEditableWarning
         onInput={emit}
-        onMouseUp={rememberSelection}
-        onKeyUp={rememberSelection}
-        onFocus={rememberSelection}
+        onMouseUp={() => { rememberSelection(); updateToolbarPosition(); }}
+        onKeyUp={() => { rememberSelection(); updateToolbarPosition(); }}
+        onFocus={() => { rememberSelection(); updateToolbarPosition(); }}
       />
     </div>
   );

@@ -12,6 +12,8 @@ import RichTextEditor from "./RichTextEditor";
 type Props = {
   blocks: NoteBlock[];
   onChange: (blocks: NoteBlock[]) => void;
+  helpHidden?: boolean;
+  onHelpHintUsed?: () => void;
 };
 
 const labels: Array<[NoteBlockType, string]> = [
@@ -82,15 +84,20 @@ const createBlock = (type: NoteBlockType): NoteBlock => ({
   ...(type === "table" ? { rows: 3, columns: 3, cells: Array(9).fill("") } : {}),
 });
 
-export default function NoteCanvas({ blocks, onChange }: Props) {
+export default function NoteCanvas({ blocks, onChange, helpHidden = false, onHelpHintUsed = () => undefined }: Props) {
   const [drawing, setDrawing] = useState(false);
   const [drawingIndex, setDrawingIndex] = useState<number | null>(null);
-  const [menu, setMenu] = useState<{ x: number; y: number; index: number } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; index: number; blockId?: string } | null>(null);
   const blockDrag = useRef<{ id: string; startX: number; startY: number; moved: boolean; overId?: string } | null>(null);
+  const blockDragMoved = useRef(false);
   const [dragView, setDragView] = useState<{ id: string; overId?: string } | null>(null);
-  const update = (id: string, patch: Partial<NoteBlock>) => onChange(blocks.map((block) => (block.id === id ? { ...block, ...patch } : block)));
-  const insert = (block: NoteBlock) => onChange([...blocks, block]);
+  const update = (id: string, patch: Partial<NoteBlock>) => {
+    onHelpHintUsed();
+    onChange(blocks.map((block) => (block.id === id ? { ...block, ...patch } : block)));
+  };
+  const insert = (block: NoteBlock) => { onHelpHintUsed(); onChange([...blocks, block]); };
   const insertAt = (index: number, block: NoteBlock) => {
+    onHelpHintUsed();
     const next = [...blocks];
     next.splice(index, 0, block);
     onChange(next);
@@ -120,13 +127,16 @@ export default function NoteCanvas({ blocks, onChange }: Props) {
     if (from < 0 || to < 0) return;
     const [moved] = next.splice(from, 1);
     next.splice(to, 0, moved);
+    onHelpHintUsed();
     onChange(next);
   };
   const startBlockDrag = (id: string, event: ReactPointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
+    onHelpHintUsed();
     event.currentTarget.setPointerCapture(event.pointerId);
+    blockDragMoved.current = false;
     blockDrag.current = { id, startX: event.clientX, startY: event.clientY, moved: false };
     setDragView({ id });
   };
@@ -141,6 +151,7 @@ export default function NoteCanvas({ blocks, onChange }: Props) {
       moved: current.moved || Math.hypot(event.clientX - current.startX, event.clientY - current.startY) > 4,
       overId,
     };
+    blockDragMoved.current = next.moved;
     blockDrag.current = next;
     setDragView({ id: next.id, overId });
   };
@@ -150,12 +161,28 @@ export default function NoteCanvas({ blocks, onChange }: Props) {
     event.preventDefault();
     event.stopPropagation();
     if (current.moved && current.overId) reorderBlock(current.id, current.overId);
+    else if (!current.moved) {
+      openBlockOptions(event, blocks.findIndex((item) => item.id === current.id) + 1, current.id);
+    }
     blockDrag.current = null;
     setDragView(null);
   };
-  const openInsertMenu = (event: ReactMouseEvent<HTMLElement>, index: number) => {
+  const openInsertMenu = (event: ReactMouseEvent<HTMLElement>, index: number, blockId?: string) => {
     event.preventDefault();
-    setMenu({ x: Math.min(event.clientX, innerWidth - 230), y: Math.min(event.clientY, innerHeight - 360), index });
+    onHelpHintUsed();
+    setMenu({ x: Math.min(event.clientX, innerWidth - 230), y: Math.min(event.clientY, innerHeight - 360), index, blockId });
+  };
+  const openBlockOptions = (event: ReactMouseEvent<HTMLButtonElement>, index: number, blockId: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onHelpHintUsed();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    setMenu({
+      x: Math.min(bounds.right, innerWidth - 230),
+      y: Math.min(bounds.bottom, innerHeight - 360),
+      index,
+      blockId,
+    });
   };
   return (
     <section className="block-editor" onContextMenu={(event) => {
@@ -164,12 +191,20 @@ export default function NoteCanvas({ blocks, onChange }: Props) {
       const index = children.findIndex((child) => event.clientY < child.getBoundingClientRect().top + child.offsetHeight / 2);
       openInsertMenu(event, index < 0 ? blocks.length : index);
     }}>
-      <p className="block-help">在任一區塊按右鍵，可直接在該處插入文字、列表、圖片或表格；區塊仍可拖曳排序。</p>
+      {!helpHidden && blocks.length === 0 && <p className="block-help">在任一區塊按右鍵，可直接在該處插入文字、列表、圖片或表格；區塊仍可拖曳排序。</p>}
       <div className="note-blocks">
         {blocks.length === 0 && <button className="empty-block" onClick={() => insert(createBlock("paragraph"))}>開始書寫</button>}
         {blocks.map((block) => (
-          <article data-block-sort={block.id} key={block.id} className={`note-block block-${block.type} ${dragView?.overId === block.id ? "drag-over" : ""}`} onContextMenu={(event) => openInsertMenu(event, blocks.findIndex((item) => item.id === block.id) + 1)}>
-            <div className="block-side"><button type="button" className="block-drag-handle" title="按住拖曳排序" aria-label="拖曳區塊排序" onPointerDown={(event) => startBlockDrag(block.id, event)} onPointerMove={moveBlockDrag} onPointerUp={endBlockDrag} onPointerCancel={endBlockDrag}>⋮⋮</button><button aria-label="刪除區塊" onClick={() => onChange(blocks.filter((item) => item.id !== block.id))}>×</button></div>
+          <article data-block-sort={block.id} key={block.id} className={`note-block block-${block.type} ${dragView?.overId === block.id ? "drag-over" : ""}`} onContextMenu={(event) => openInsertMenu(event, blocks.findIndex((item) => item.id === block.id) + 1, block.id)}>
+            <div className="block-side">
+              <button type="button" className="block-drag-handle" title="拖曳排序；點一下開啟區塊選項" aria-label="區塊排序與選項" onPointerDown={(event) => startBlockDrag(block.id, event)} onPointerMove={moveBlockDrag} onPointerUp={endBlockDrag} onPointerCancel={endBlockDrag} onClick={(event) => {
+                if (blockDragMoved.current) {
+                  blockDragMoved.current = false;
+                  return;
+                }
+                openBlockOptions(event, blocks.findIndex((item) => item.id === block.id) + 1, block.id);
+              }}>⋮⋮</button>
+            </div>
             <BlockContent block={block} update={(patch) => update(block.id, patch)} />
           </article>
         ))}
@@ -180,7 +215,8 @@ export default function NoteCanvas({ blocks, onChange }: Props) {
           <small>插入區塊</small>
           {labels.map(([type, label]) => <button key={type} type="button" onClick={() => { insertAt(menu.index, createBlock(type)); setMenu(null); }}>＋ {label}</button>)}
           <label>▧ 加入圖片<input hidden type="file" accept="image/*" onChange={(event) => { chooseImage(event, menu.index); setMenu(null); }} /></label>
-          <button type="button" onClick={() => { setDrawingIndex(menu.index); setDrawing(true); setMenu(null); }}>✎ 簡易畫筆</button>
+          <button type="button" onClick={() => { onHelpHintUsed(); setDrawingIndex(menu.index); setDrawing(true); setMenu(null); }}>✎ 簡易畫筆</button>
+          {menu.blockId && <button type="button" className="delete-block-menu" onClick={() => { onChange(blocks.filter((item) => item.id !== menu.blockId)); setMenu(null); }}>刪除此區塊</button>}
         </div></>
       )}
       {drawing && <DrawingPad onClose={() => { setDrawing(false); setDrawingIndex(null); }} onSave={(dataUrl) => { const block = { id: makeId("block"), type: "drawing" as const, dataUrl, width: 70 }; if (drawingIndex === null) insert(block); else insertAt(drawingIndex, block); setDrawing(false); setDrawingIndex(null); }} />}
@@ -202,11 +238,51 @@ function BlockContent({ block, update }: { block: NoteBlock; update: (patch: Par
   }
   if (block.type === "checkList") {
     const lines = (block.content || "").split("\n"), checked = block.checked || [];
-    return <div className="check-block">{lines.map((line, index) => <label key={index}><input type="checkbox" checked={Boolean(checked[index])} onChange={(event) => { const next = [...checked]; next[index] = event.target.checked; update({ checked: next }); }} /><input value={line} placeholder="待辦項目" onKeyDown={(event) => { if (event.key !== "Enter") return; event.preventDefault(); const next = [...lines]; next.splice(index + 1, 0, ""); const nextChecked = [...checked]; nextChecked.splice(index + 1, 0, false); update({ content: next.join("\n"), checked: nextChecked }); requestAnimationFrame(() => (event.currentTarget.parentElement?.nextElementSibling?.querySelector("input:last-child") as HTMLInputElement | null)?.focus()); }} onChange={(event) => { const next = [...lines]; next[index] = event.target.value; update({ content: next.join("\n") }); }} /></label>)}</div>;
+    const removeLine = (index: number) => {
+      const next = lines.filter((_, lineIndex) => lineIndex !== index);
+      const nextChecked = checked.filter((_, lineIndex) => lineIndex !== index);
+      if (!next.length) {
+        next.push("");
+        nextChecked.push(false);
+      }
+      update({ content: next.join("\n"), checked: nextChecked });
+    };
+    return <div className="check-block">{lines.map((line, index) => <div className="check-list-row" key={index}>
+      <input type="checkbox" aria-label={`勾選待辦項目 ${index + 1}`} checked={Boolean(checked[index])} onChange={(event) => { const next = [...checked]; next[index] = event.target.checked; update({ checked: next }); }} />
+      <input value={line} placeholder="待辦項目" onKeyDown={(event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        const row = event.currentTarget.parentElement;
+        const next = [...lines];
+        next.splice(index + 1, 0, "");
+        const nextChecked = [...checked];
+        nextChecked.splice(index + 1, 0, false);
+        update({ content: next.join("\n"), checked: nextChecked });
+        requestAnimationFrame(() => (row?.nextElementSibling?.querySelector("input:not([type=checkbox])") as HTMLInputElement | null)?.focus());
+      }} onChange={(event) => { const next = [...lines]; next[index] = event.target.value; update({ content: next.join("\n") }); }} />
+      <button type="button" className="list-item-remove" aria-label={`刪除待辦項目 ${index + 1}`} title="刪除此項" onClick={() => removeLine(index)}>×</button>
+    </div>)}</div>;
   }
   if (block.type === "bulletList" || block.type === "numberList") {
     const lines = (block.content || "").split("\n");
-    return <div className="structured-list">{lines.map((line, index) => <label key={index}><b>{block.type === "bulletList" ? "•" : `${index + 1}.`}</b><input value={line} placeholder="列表項目" onKeyDown={(event) => { if (event.key !== "Enter") return; event.preventDefault(); const next = [...lines]; next.splice(index + 1, 0, ""); update({ content: next.join("\n") }); requestAnimationFrame(() => (event.currentTarget.parentElement?.nextElementSibling?.querySelector("input") as HTMLInputElement | null)?.focus()); }} onChange={(event) => { const next = [...lines]; next[index] = event.target.value; update({ content: next.join("\n") }); }} /></label>)}</div>;
+    const removeLine = (index: number) => {
+      const next = lines.filter((_, lineIndex) => lineIndex !== index);
+      if (!next.length) next.push("");
+      update({ content: next.join("\n") });
+    };
+    return <div className="structured-list">{lines.map((line, index) => <div className="structured-list-row" key={index}>
+      <b>{block.type === "bulletList" ? "•" : `${index + 1}.`}</b>
+      <input aria-label={`列表項目 ${index + 1}`} value={line} placeholder="列表項目" onKeyDown={(event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        const row = event.currentTarget.parentElement;
+        const next = [...lines];
+        next.splice(index + 1, 0, "");
+        update({ content: next.join("\n") });
+        requestAnimationFrame(() => (row?.nextElementSibling?.querySelector("input") as HTMLInputElement | null)?.focus());
+      }} onChange={(event) => { const next = [...lines]; next[index] = event.target.value; update({ content: next.join("\n") }); }} />
+      <button type="button" className="list-item-remove" aria-label={`刪除列表項目 ${index + 1}`} title="刪除此項" onClick={() => removeLine(index)}>×</button>
+    </div>)}</div>;
   }
   const placeholder = block.type === "heading" ? "輸入標題" : block.type === "quote" ? "輸入引言" : "輸入文字……";
   return <RichTextEditor
@@ -215,6 +291,7 @@ function BlockContent({ block, update }: { block: NoteBlock; update: (patch: Par
     ariaLabel={placeholder}
     placeholder={placeholder}
     compact={block.type === "heading"}
+    contextualToolbar
     onChange={(html, text) => update({ html, content: text })}
   />;
 }

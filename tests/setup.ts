@@ -37,4 +37,7 @@ Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
   writable: true,
 });
 beforeEach(() => localStorage.clear());
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});

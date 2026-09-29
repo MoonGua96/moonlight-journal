@@ -1,4 +1,4 @@
-import type { AppState } from "./types";
+import type { AppState, TodoKind } from "./types";
 import { initialState, todayKey } from "./types";
 import { nearestPaletteId } from "./colors";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -24,7 +24,7 @@ export const normalizeState = (value: Partial<AppState>): AppState => {
     const hasActivePause = pausePeriods.some((period) => !period.endDate);
     return {
       ...normalized,
-      kind: todo.kind || "task",
+      kind: (todo.kind === "progress" ? "progress" : todo.recurrence?.rules?.length ? "recurring" : todo.kind || "task") as TodoKind,
       startDate: todo.startDate ?? todo.dueDate ?? "",
       endDate: todo.endDate ?? todo.dueDate ?? "",
       dueDate: todo.dueDate ?? todo.endDate ?? "",
@@ -33,6 +33,7 @@ export const normalizeState = (value: Partial<AppState>): AppState => {
         todo.status === "paused" && !hasActivePause
           ? [...pausePeriods, { startDate: todayKey }]
           : pausePeriods,
+      donePeriods: (todo.donePeriods || []).filter((period) => Boolean(period?.startDate)),
       progressLogs: (todo.progressLogs || []).map((log) => ({
         ...log,
         text: log.text || "",
@@ -114,7 +115,13 @@ export const normalizeState = (value: Partial<AppState>): AppState => {
     // todo model. Their full legacy record is retained on the todo via its
     // recurrence rule, exceptions, overrides, and legacyRecurringId.
     recurringEvents: [],
-    ledgerEntries: value.ledgerEntries || [],
+    ledgerEntries: (value.ledgerEntries || []).map((entry) => ({
+      ...entry,
+      item: entry.item || "",
+      shopBrand: entry.shopBrand || "",
+      paymentMethod: entry.paymentMethod ?? entry.account ?? "",
+      note: entry.note || "",
+    })),
     ledgerCategories: (value.ledgerCategories || []).map((category) => ({
       ...category,
       color:
@@ -184,6 +191,7 @@ export const normalizeState = (value: Partial<AppState>): AppState => {
     inbox: (value.inbox || []).map((item, index) => ({
       ...item,
       position: item.position ?? index,
+      attachments: item.attachments || [],
     })),
     photos: (value.photos || []).map((photo) => ({
       ...photo,

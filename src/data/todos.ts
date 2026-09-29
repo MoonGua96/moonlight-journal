@@ -5,7 +5,6 @@ import type {
   TodoOccurrenceOverride,
   TodoStatus,
 } from "./types";
-import { todayKey } from "./types";
 
 export interface TodoCalendarEntry {
   id: string;
@@ -20,11 +19,13 @@ export interface TodoCalendarEntry {
   completed: boolean;
   movedTo?: string;
   pausedHint?: boolean;
+  overdueDays?: number;
 }
 
 const parseDate = (value: string) => new Date(`${value}T12:00:00`);
 const dayKey = (value: Date) =>
   `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+const todayLocal = () => dayKey(new Date());
 const daysInMonth = (year: number, month: number) =>
   new Date(year, month + 1, 0).getDate();
 
@@ -66,16 +67,20 @@ const previousDay = (date: string) => {
   return dayKey(value);
 };
 
-export function changeTodoStatus(todo: Todo, status: TodoStatus, date = todayKey): Todo {
+export function changeTodoStatus(todo: Todo, status: TodoStatus, date = todayLocal()): Todo {
   const pausePeriods = [...(todo.pausePeriods || [])];
+  const donePeriods = [...(todo.donePeriods || [])];
   const openIndex = pausePeriods.reduce(
+    (last, period, index) => !period.endDate ? index : last,
+    -1,
+  );
+  const openDoneIndex = donePeriods.reduce(
     (last, period, index) => !period.endDate ? index : last,
     -1,
   );
 
   if (todo.status === status) {
-    if (status === "paused" && openIndex < 0) pausePeriods.push({ startDate: date });
-    return { ...todo, pausePeriods };
+    return { ...todo, pausePeriods, donePeriods };
   }
 
   if (status === "paused") {
@@ -89,7 +94,80 @@ export function changeTodoStatus(todo: Todo, status: TodoStatus, date = todayKey
     }
   }
 
-  return { ...todo, status, pausePeriods };
+  if (status === "done") {
+    donePeriods.push({ startDate: date });
+  } else if (todo.status === "done" && openDoneIndex >= 0) {
+    const period = donePeriods[openDoneIndex];
+    if (period.startDate < date) {
+      donePeriods[openDoneIndex] = { ...period, endDate: previousDay(date) };
+    } else {
+      donePeriods.splice(openDoneIndex, 1);
+    }
+  }
+
+  return { ...todo, status, pausePeriods, donePeriods };
+}
+
+/** Calendar history is preserved by default; callers may explicitly replace it on a date edit. */
+export function resetProgressCalendarHistoryOnDateEdit(previous: Todo, updated: Todo, overwrite = false): Todo {
+  const rangeChanged = previous.startDate !== updated.startDate || previous.endDate !== updated.endDate;
+  if (
+    overwrite &&
+    previous.kind === "progress" &&
+    updated.kind === "progress" &&
+    rangeChanged
+  ) {
+    return { ...updated, donePeriods: [] };
+  }
+  return updated;
+}
+
+export function ensureTodoStatusPeriod(todo: Todo, date = todayLocal()): Todo {
+  const pausePeriods = [...(todo.pausePeriods || [])];
+  const donePeriods = [...(todo.donePeriods || [])];
+  if (todo.status === "paused" && !pausePeriods.some((period) => !period.endDate)) {
+    pausePeriods.push({ startDate: date });
+  }
+  if (todo.status === "done" && !donePeriods.some((period) => !period.endDate)) {
+    donePeriods.push({ startDate: date });
+  }
+  return { ...todo, pausePeriods, donePeriods };
+}
+
+export function prepareTodoForSave(
+  previous: Todo | undefined,
+  updated: Todo,
+  date = todayLocal(),
+  options: { overwriteProgressCalendarHistory?: boolean } = {},
+): Todo {
+  if (!previous) return ensureTodoStatusPeriod(updated, date);
+  const transition = previous.status === updated.status
+    ? previous
+    : changeTodoStatus(previous, updated.status, date);
+  const transitioned = {
+    ...updated,
+    pausePeriods: transition.pausePeriods || [],
+    donePeriods: transition.donePeriods || [],
+  };
+  return resetProgressCalendarHistoryOnDateEdit(previous, transitioned, options.overwriteProgressCalendarHistory);
+}
+
+export function promoteDueTodos(todos: Todo[], date = todayLocal()): Todo[] {
+  let nextPosition = Math.max(
+    -1,
+    ...todos
+      .filter((todo) => todo.status === "doing" && !todo.deletedAt && !todo.archivedAt)
+      .map((todo) => todo.position),
+  ) + 1;
+  let changed = false;
+  const next = todos.map((todo) => {
+    const start = todo.startDate || todo.dueDate;
+    if (todo.status !== "todo" || todo.deletedAt || todo.archivedAt || !start || start > date)
+      return todo;
+    changed = true;
+    return { ...todo, status: "doing" as const, position: nextPosition++ };
+  });
+  return changed ? next : todos;
 }
 
 const isPausedAfterStart = (todo: Todo, date: string) =>
@@ -143,21 +221,37 @@ const entryFromOccurrence = (
 });
 
 export function getTodoCalendarEntries(todo: Todo, date: string): TodoCalendarEntry[] {
-  if (todo.deletedAt || todo.status === "todo" || isPausedAfterStart(todo, date)) return [];
+  if (todo.deletedAt || isPausedAfterStart(todo, date)) return [];
+  const inCompletedGap = (todo.donePeriods || []).some(
+    (period) => date > period.startDate && (!period.endDate || date <= period.endDate),
+  );
+  if (inCompletedGap) return [];
   const kind = todo.kind || "task";
   let entries: TodoCalendarEntry[];
   if (kind === "progress") {
-    const dueDate = todo.dueDate || todo.endDate || "";
-    entries = dueDate === date
+    const start = todo.startDate || todo.dueDate || "";
+    const end = todo.endDate || todo.dueDate || start;
+    const withinRange = Boolean(start && end && date >= start && date <= end);
+    const completedOnDate = (todo.donePeriods || []).some((period) => period.startDate === date);
+    const openDonePeriod = [...(todo.donePeriods || [])].reverse().find((period) => !period.endDate);
+    const beforeOrOnFinalCompletion = todo.status === "done" && openDonePeriod
+      ? date <= openDonePeriod.startDate
+      : false;
+    const wasActiveOnDate = todo.status === "doing" || completedOnDate || beforeOrOnFinalCompletion;
+    const overdueDays = Boolean(end) && wasActiveOnDate && date > end && date <= todayLocal()
+      ? Math.round((parseDate(date).getTime() - parseDate(end).getTime()) / 86_400_000)
+      : 0;
+    entries = withinRange || overdueDays > 0 || completedOnDate
       ? [{
-          id: `${todo.id}:deadline:${date}`,
+          id: `${todo.id}:progress:${date}`,
           todoId: todo.id,
           date,
           kind: "progress",
           title: todo.title,
           time: "",
           color: todo.color,
-          completed: false,
+          completed: completedOnDate,
+          overdueDays: overdueDays || undefined,
         }]
       : [];
   } else if (todo.recurrence?.rules?.length) {
@@ -256,7 +350,7 @@ export function legacyRecurringEventToTodo(event: RecurringEvent, position: numb
     legacyRecurringId: event.id,
     title: event.title,
     description: "",
-    kind: "task",
+    kind: "recurring",
     status: "doing",
     color: event.color,
     dueDate: event.endDate,

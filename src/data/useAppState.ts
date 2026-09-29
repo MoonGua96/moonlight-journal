@@ -6,6 +6,10 @@ import {
   saveState,
 } from "./repository";
 import { initialState, type AppState } from "./types";
+import { promoteDueTodos } from "./todos";
+
+const localDateKey = (date: Date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 
 export function useAppState() {
   const [state, setState] = useState<AppState>(initialState);
@@ -23,6 +27,20 @@ export function useAppState() {
       setReady(true);
     });
   }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+    const promote = () => {
+      const date = localDateKey(new Date());
+      setState((current) => {
+        const todos = promoteDueTodos(current.todos, date);
+        return todos === current.todos ? current : { ...current, todos };
+      });
+    };
+    promote();
+    const interval = window.setInterval(promote, 60_000);
+    return () => window.clearInterval(interval);
+  }, [ready]);
 
   useEffect(() => {
     if (!ready) return;

@@ -1,7 +1,9 @@
 import {
+  useEffect,
   useRef,
   useState,
   type Dispatch,
+  type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type SetStateAction,
 } from "react";
@@ -74,6 +76,34 @@ export default function NotesWorkspace({
   const pointerDrag = useRef<PointerDrag | null>(null);
   const [dragView, setDragView] = useState<PointerDrag | null>(null);
   const folders = [...state.noteFolders].sort((a, b) => a.position - b.position);
+  const [folderDialog, setFolderDialog] = useState<{ id?: string; name: string } | null>(null);
+  const [folderError, setFolderError] = useState("");
+
+  useEffect(() => {
+    if (!folderDialog) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setFolderDialog(null);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [folderDialog]);
+
+  const saveFolderDialog = () => {
+    if (!folderDialog) return;
+    const name = folderDialog.name.trim();
+    if (!name) {
+      setFolderError("請輸入資料夾名稱。");
+      return;
+    }
+    setState((current) => ({
+      ...current,
+      noteFolders: folderDialog.id
+        ? current.noteFolders.map((folder) => folder.id === folderDialog.id ? { ...folder, name } : folder)
+        : [...current.noteFolders, { id: makeId("note-folder"), name, position: current.noteFolders.length }],
+    }));
+    setFolderDialog(null);
+    setFolderError("");
+  };
 
   const updateNote = (next: Note) =>
     setState((current) => ({
@@ -285,14 +315,7 @@ export default function NotesWorkspace({
         </div>
         <button
           className="add-note-folder"
-          onClick={() => {
-            const name = prompt("資料夾名稱")?.trim();
-            if (!name) return;
-            setState((current) => ({
-              ...current,
-              noteFolders: [...current.noteFolders, { id: makeId("note-folder"), name, position: current.noteFolders.length }],
-            }));
-          }}
+          onClick={() => { setFolderError(""); setFolderDialog({ name: "" }); }}
         >＋ 新增資料夾</button>
         <section data-note-folder="" className={`note-folder ${dragView?.overKind === "folder" && dragView.overId === "" ? "drag-over" : ""}`}>
           <header><strong>未分類</strong><small>{notes.filter((item) => !item.folderId).length}</small></header>
@@ -304,7 +327,7 @@ export default function NotesWorkspace({
               <span>▾ {folder.name}</span>
               <small>{notes.filter((item) => item.folderId === folder.id).length}</small>
               {pointerHandle("folder", folder.id, `拖曳資料夾 ${folder.name} 排序`)}
-              <button aria-label={`編輯資料夾 ${folder.name}`} onClick={(event) => { event.preventDefault(); const name = prompt("資料夾名稱", folder.name)?.trim(); if (name) setState((current) => ({ ...current, noteFolders: current.noteFolders.map((item) => item.id === folder.id ? { ...item, name } : item) })); }}>✎</button>
+              <button aria-label={`編輯資料夾 ${folder.name}`} onClick={(event) => { event.preventDefault(); setFolderError(""); setFolderDialog({ id: folder.id, name: folder.name }); }}>✎</button>
               <button aria-label={`刪除資料夾 ${folder.name}`} onClick={(event) => { event.preventDefault(); if (!confirm(`刪除「${folder.name}」資料夾？裡面的筆記會移到未分類。`)) return; setState((current) => ({ ...current, noteFolders: current.noteFolders.filter((item) => item.id !== folder.id), notes: current.notes.map((item) => item.folderId === folder.id ? { ...item, folderId: undefined } : item) })); }}>×</button>
             </summary>
             {notes.filter((item) => item.folderId === folder.id).map(noteRow)}
@@ -339,6 +362,7 @@ export default function NotesWorkspace({
               key={item.id}
               data-tab-sort={item.id}
               className={`sortable-tab ${item.id === tab?.id ? "active" : ""} ${dragView?.overKind === "tab" && dragView.overId === item.id ? "drag-over" : ""}`}
+              style={{ "--tab-color": item.color || "#72578d" } as CSSProperties}
             >
               <button
                 onClick={() => {
@@ -348,6 +372,15 @@ export default function NotesWorkspace({
               >
                 {item.title}
               </button>
+              <label className="tab-color-picker" title={`設定「${item.title}」的顏色`}>
+                <input
+                  type="color"
+                  aria-label={`標籤顏色 ${item.title}`}
+                  value={item.color || "#72578d"}
+                  onChange={(event) => updateTab({ ...item, color: event.target.value })}
+                />
+                <span aria-hidden="true" />
+              </label>
               {pointerHandle("tab", item.id, `拖曳 ${item.title} 排序`)}
             </div>
           ))}
@@ -443,6 +476,13 @@ export default function NotesWorkspace({
               />
               <NoteCanvas
                 blocks={section.blocks || []}
+                helpHidden={Boolean(section.blockHelpHidden)}
+                onHelpHintUsed={() => updateTab({
+                  ...tab,
+                  sections: tab.sections.map((item) =>
+                    item.id === section.id ? { ...item, blockHelpHidden: true } : item,
+                  ),
+                })}
                 onChange={(blocks) =>
                   updateTab({
                     ...tab,
@@ -456,6 +496,26 @@ export default function NotesWorkspace({
           </div>
         )}
       </article>
+      {folderDialog && (
+        <div className="modal-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setFolderDialog(null); }}>
+          <section className="modal note-folder-dialog" role="dialog" aria-modal="true" aria-label={folderDialog.id ? "編輯資料夾" : "新增資料夾"}>
+            <header>
+              <div><small>NOTE FOLDER</small><h2>{folderDialog.id ? "整理筆記空間" : "新增資料夾"}</h2></div>
+              <button className="close" type="button" aria-label="關閉" onClick={() => setFolderDialog(null)}>×</button>
+            </header>
+            <form onSubmit={(event) => { event.preventDefault(); saveFolderDialog(); }}>
+              <div className="modal-body">
+                <p className="note-folder-dialog-hint">替這一疊筆記取個好找的名字吧。</p>
+                <label className="note-folder-name-field"><span>資料夾名稱</span><input autoFocus value={folderDialog.name} onChange={(event) => { setFolderDialog({ ...folderDialog, name: event.target.value }); setFolderError(""); }} placeholder="例如：工作與學習" /></label>
+                {folderError && <small className="note-folder-error" role="alert">{folderError}</small>}
+              </div>
+              <footer>
+                <button type="submit">{folderDialog.id ? "儲存" : "建立資料夾"}</button>
+              </footer>
+            </form>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

@@ -94,7 +94,7 @@ export default function TrashPage({
       .map((x) => ({
         kind: "inbox" as const,
         id: x.id,
-        title: x.text,
+        title: x.text || x.attachments?.[0]?.originalName || "素材收藏",
         type: "收集箱",
       })),
   ];
@@ -158,6 +158,10 @@ export default function TrashPage({
           albumIds.has(photo.albumId),
       )
       .forEach((photo) => void removeMediaFiles(photo));
+    state.inbox
+      .filter((item) => targets.some((row) => row.kind === "inbox" && row.id === item.id))
+      .flatMap((item) => item.attachments || [])
+      .forEach((attachment) => void removeMediaFiles(attachment));
     setState((current) => mutate(current, targets, true));
     setSelected(new Set());
   };

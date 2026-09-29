@@ -16,7 +16,7 @@ export type PageName =
   | "settings";
 export type CalendarItemType = "note" | "todo";
 export type TodoStatus = "todo" | "doing" | "paused" | "done";
-export type TodoKind = "task" | "progress";
+export type TodoKind = "task" | "recurring" | "progress";
 export type RecurrenceFrequency = "daily" | "weekly" | "monthly";
 
 export interface TodoOccurrenceOverride {
@@ -62,6 +62,13 @@ export interface TodoPausePeriod {
   endDate?: string;
 }
 
+export interface TodoDonePeriod {
+  /** The task remains visible on this completion date. Later dates are hidden. */
+  startDate: string;
+  /** Reopened tasks resume after this inclusive inactive period. */
+  endDate?: string;
+}
+
 export interface CalendarItem {
   id: string;
   type: CalendarItemType;
@@ -92,6 +99,8 @@ export interface Todo {
   progressLogs?: ProgressLog[];
   /** Paused periods are retained so calendar entries can resume correctly later. */
   pausePeriods?: TodoPausePeriod[];
+  /** Done transition dates remain visible; the following done-status gap is hidden. */
+  donePeriods?: TodoDonePeriod[];
   /** Keeps the legacy source identity available for migration auditing. */
   legacyRecurringId?: string;
   legacyCalendarItemId?: string;
@@ -165,6 +174,7 @@ export interface NoteTab {
   title: string;
   sections: NoteSection[];
   position: number;
+  color?: string;
 }
 
 export interface NoteAsset {
@@ -182,6 +192,7 @@ export interface NoteSection {
   body: string;
   assets?: NoteAsset[];
   blocks?: NoteBlock[];
+  blockHelpHidden?: boolean;
 }
 
 export interface InboxItem {
@@ -189,7 +200,21 @@ export interface InboxItem {
   text: string;
   createdAt: string;
   position?: number;
+  attachments?: InboxAttachment[];
   deletedAt?: string;
+}
+
+export interface InboxAttachment {
+  id: string;
+  mediaType: "image" | "video";
+  originalName: string;
+  mimeType?: string;
+  size?: number;
+  duration?: number;
+  dataUrl?: string;
+  previewDataUrl?: string;
+  originalPath?: string;
+  previewPath?: string;
 }
 
 export interface Album {
@@ -227,6 +252,13 @@ export interface LedgerEntry {
   amount: number;
   date: string;
   categoryId: string;
+  /** Name of the purchased item or income source. */
+  item?: string;
+  /** Shop or brand name. */
+  shopBrand?: string;
+  /** New field replacing the legacy account label. */
+  paymentMethod?: string;
+  /** Legacy v0.9.0 field; retained when loading existing data. */
   account: string;
   note: string;
   createdAt: string;

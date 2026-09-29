@@ -15,10 +15,13 @@ import {
   exportState,
   normalizeState,
   removeMediaFiles,
+  mediaSource,
   restoreFullBackup,
   saveState,
+  storeMedia,
   setDesktopPetVisible,
 } from "./data/repository";
+import { prepareMedia } from "./data/media";
 import { birthdayOnDate, dateKey, lunarInfo } from "./data/calendar";
 import {
   makeId,
@@ -28,6 +31,7 @@ import {
   type AppState,
   type CalendarItem,
   type DiaryEntry,
+  type InboxAttachment,
   type Note,
   type PageName,
   type RecurrenceFrequency,
@@ -44,14 +48,18 @@ import {
   getMultiDayLength,
   getTodoCalendarEntries,
   isMultiDayTodo,
+  prepareTodoForSave,
+  promoteDueTodos,
   toggleTodoCompletion,
 } from "./data/todos";
 import { useAppState } from "./data/useAppState";
+import { clampFloatingMoonPosition } from "./data/floatingMoon";
 import { nearestPaletteId, palette, paletteItem, paletteStyle, type PaletteId } from "./data/colors";
 import NoteCanvas from "./components/NoteCanvas";
 import AlbumPage from "./components/AlbumPage";
 import CalendarDataModal from "./components/CalendarDataModal";
 import VaultPage from "./components/VaultPage";
+import { unlockVault } from "./data/vault";
 import LedgerPage from "./components/LedgerPage";
 import NotesWorkspace from "./components/NotesWorkspace";
 import RichTextEditor from "./components/RichTextEditor";
@@ -126,12 +134,14 @@ function Modal({
   onClose,
   children,
   footer,
+  className = "",
 }: {
   title: string;
   eyebrow?: string;
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
+  className?: string;
 }) {
   return (
     <div
@@ -142,7 +152,7 @@ function Modal({
       }}
     >
       <section
-        className="modal"
+        className={`modal ${className}`.trim()}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -174,15 +184,37 @@ function Sidebar({
   inboxCount,
   trashCount,
   onCapture,
+  open,
+  setOpen,
 }: {
   page: PageName;
   setPage: (p: PageName) => void;
   inboxCount: number;
   trashCount: number;
   onCapture: () => void;
+  open: boolean;
+  setOpen: (value: boolean) => void;
 }) {
+  const openTimer = useRef<number | undefined>(undefined);
+  const closeTimer = useRef<number | undefined>(undefined);
+  const scheduleOpen = () => {
+    window.clearTimeout(closeTimer.current);
+    if (open) return;
+    window.clearTimeout(openTimer.current);
+    openTimer.current = window.setTimeout(() => setOpen(true), 120);
+  };
+  const scheduleClose = () => {
+    window.clearTimeout(openTimer.current);
+    closeTimer.current = window.setTimeout(() => setOpen(false), 360);
+  };
+  useEffect(() => () => {
+    window.clearTimeout(openTimer.current);
+    window.clearTimeout(closeTimer.current);
+  }, []);
   return (
-    <aside className="sidebar">
+    <>
+    <div className="sidebar-edge-trigger" aria-hidden="true" onMouseEnter={scheduleOpen} onMouseLeave={() => window.clearTimeout(openTimer.current)} />
+    <aside className={`sidebar ${open ? "open" : ""}`} onMouseEnter={() => window.clearTimeout(closeTimer.current)} onMouseLeave={scheduleClose}>
       <div className="brand">
         <span>◐</span>
         <div>
@@ -190,7 +222,7 @@ function Sidebar({
           <small>Moonlight Journal</small>
         </div>
       </div>
-      <button className="capture" onClick={onCapture}>
+          <button className="capture" onClick={() => { onCapture(); setOpen(false); }}>
         ＋ 快速記錄
       </button>
       <nav>
@@ -199,7 +231,7 @@ function Sidebar({
             aria-label={label}
             key={key}
             className={page === key ? "active" : ""}
-            onClick={() => setPage(key)}
+            onClick={() => { setPage(key); setOpen(false); }}
           >
             <i>{icon}</i>
             <span>{label}</span>
@@ -214,12 +246,13 @@ function Sidebar({
       <button
         aria-label="設定"
         className={`settings ${page === "settings" ? "active" : ""}`}
-        onClick={() => setPage("settings")}
+        onClick={() => { setPage("settings"); setOpen(false); }}
       >
         <i>⚙</i>
         <span>設定</span>
       </button>
     </aside>
+    </>
   );
 }
 
@@ -371,6 +404,7 @@ interface CalendarDisplayItem {
   completed?: boolean;
   movedTo?: string;
   pausedHint?: boolean;
+  overdueDays?: number;
 }
 const timeToMinutes = (value?: string) => {
   if (!value) return 0;
@@ -395,6 +429,7 @@ function CalendarEntryControl({
   onToggle?: (item: CalendarDisplayItem) => void;
 }) {
   const checkable = item.type === "todo" && Boolean(item.todoId && item.occurrenceDate);
+  const overdueMarker = item.overdueDays ? "⚠" : "";
   return (
     <div
       className={`calendar-entry-control ${className} ${checkable ? "checkable" : ""} ${item.completed ? "completed" : ""}`}
@@ -421,8 +456,10 @@ function CalendarEntryControl({
         {showTime && item.time && (
           <small>{item.time}{item.endTime ? `–${item.endTime}` : ""}</small>
         )}
-        <span>{item.title}</span>
-        {item.type === "progress" && <small>長期進度 · 期限</small>}
+        <span className="calendar-entry-title">
+          {overdueMarker && <b className="calendar-overdue-mark" aria-label={`逾期 ${item.overdueDays} 天`}>{overdueMarker}</b>}
+          {item.title}
+        </span>
         {item.type === "move-hint" && <small>已改至 {item.movedTo}</small>}
         {(item.type === "paused-hint" || item.pausedHint) && <small className="calendar-paused-hint">已暫停</small>}
       </button>
@@ -517,9 +554,12 @@ function CalendarPage({
   );
   const [selected, setSelected] = useState(todayKey);
   const [calendarView, setCalendarView] = useState<"month" | "week" | "day">("month");
+  const [miniMonth, setMiniMonth] = useState(new Date(now.getFullYear(), now.getMonth(), 1));
   const [dialog, setDialog] = useState<{ item?: CalendarItem } | null>(null);
   const [todoEditor, setTodoEditor] = useState<Todo | null | undefined>(undefined);
   const [progressEditor, setProgressEditor] = useState<Todo | null>(null);
+  const [progressDate, setProgressDate] = useState(todayKey);
+  const [todoEditorDate, setTodoEditorDate] = useState(todayKey);
   const [occurrenceEditor, setOccurrenceEditor] = useState<{
     todo: Todo;
     occurrenceDate: string;
@@ -546,6 +586,7 @@ function CalendarPage({
           completed: entry.completed,
           movedTo: entry.movedTo,
           pausedHint: entry.pausedHint,
+          overdueDays: entry.overdueDays,
         })),
       ),
     ].sort((a, b) => (a.time || "99").localeCompare(b.time || "99"));
@@ -574,6 +615,20 @@ function CalendarPage({
   const visibleDates = cells.map((cell) =>
     dateKey(new Date(year, m + cell.offset, cell.day)),
   );
+  const miniYear = miniMonth.getFullYear();
+  const miniMonthIndex = miniMonth.getMonth();
+  const miniFirst = new Date(miniYear, miniMonthIndex, 1).getDay();
+  const miniDays = new Date(miniYear, miniMonthIndex + 1, 0).getDate();
+  const miniPrevDays = new Date(miniYear, miniMonthIndex, 0).getDate();
+  const miniDates = Array.from({ length: 42 }, (_, index) => {
+    const day = index - miniFirst + 1;
+    const date = day < 1
+      ? new Date(miniYear, miniMonthIndex - 1, miniPrevDays + day)
+      : day > miniDays
+        ? new Date(miniYear, miniMonthIndex + 1, day - miniDays)
+        : new Date(miniYear, miniMonthIndex, day);
+    return { date: dateKey(date), inMonth: date.getMonth() === miniMonthIndex };
+  });
   const selectedDate = new Date(`${selected}T12:00:00`);
   const weekStart = new Date(selectedDate);
   weekStart.setDate(selectedDate.getDate() - selectedDate.getDay());
@@ -587,8 +642,10 @@ function CalendarPage({
       const todo = state.todos.find((value) => value.id === item.todoId);
       if (!todo) return;
       if (item.type === "progress") {
-        setProgressEditor(todo);
+        setTodoEditorDate(item.date);
+        setTodoEditor(todo);
       } else if (item.type === "paused-hint") {
+        setTodoEditorDate(item.date);
         setTodoEditor(todo);
       } else if (todo.recurrence) {
         setOccurrenceEditor({
@@ -603,6 +660,7 @@ function CalendarPage({
           displayDate: item.date,
         });
       } else {
+        setTodoEditorDate(item.date);
         setTodoEditor(todo);
       }
       return;
@@ -618,22 +676,28 @@ function CalendarPage({
     if (!item.todoId || !item.occurrenceDate) return;
     setState((current) => ({
       ...current,
-      todos: current.todos.map((todo) =>
-        todo.id === item.todoId
-          ? toggleTodoCompletion(todo, item.occurrenceDate!)
-          : todo,
-      ),
+      todos: current.todos.map((todo) => {
+        if (todo.id !== item.todoId) return todo;
+        const toggled = toggleTodoCompletion(todo, item.occurrenceDate!);
+        if (todo.recurrence || isMultiDayTodo(todo)) return toggled;
+        const completed = (toggled.completedDates || []).includes(item.occurrenceDate!);
+        return changeTodoStatus(toggled, completed ? "done" : "doing", item.occurrenceDate!);
+      }),
     }));
   };
   const shiftCalendar = (direction: number) => {
     if (calendarView === "month") {
-      setMonth(new Date(year, m + direction, 1));
+      const next = new Date(year, m + direction, 1);
+      setMonth(next);
+      setMiniMonth(next);
       return;
     }
     const next = new Date(selectedDate);
     next.setDate(next.getDate() + direction * (calendarView === "week" ? 7 : 1));
     setSelected(dateKey(next));
-    setMonth(new Date(next.getFullYear(), next.getMonth(), 1));
+    const nextMonth = new Date(next.getFullYear(), next.getMonth(), 1);
+    setMonth(nextMonth);
+    setMiniMonth(nextMonth);
   };
   const save = (item: CalendarItem) =>
     setState((s) => ({
@@ -678,7 +742,9 @@ function CalendarPage({
           <button
             className="secondary"
             onClick={() => {
-              setMonth(new Date(now.getFullYear(), now.getMonth(), 1));
+              const todayMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+              setMonth(todayMonth);
+              setMiniMonth(todayMonth);
               setSelected(todayKey);
             }}
           >
@@ -686,6 +752,43 @@ function CalendarPage({
           </button>
         </div>
       </div>
+      <div className="calendar-workspace">
+      <aside className="calendar-mini panel" aria-label="快速選擇日期">
+        <header>
+          <button type="button" aria-label="上一個月" onClick={() => setMiniMonth(new Date(miniYear, miniMonthIndex - 1, 1))}>‹</button>
+          <input
+            aria-label="選擇年月"
+            type="month"
+            value={miniYear + "-" + String(miniMonthIndex + 1).padStart(2, "0")}
+            onChange={(event) => {
+              const [nextYear, nextMonth] = event.target.value.split("-").map(Number);
+              if (nextYear && nextMonth) setMiniMonth(new Date(nextYear, nextMonth - 1, 1));
+            }}
+          />
+          <button type="button" aria-label="下一個月" onClick={() => setMiniMonth(new Date(miniYear, miniMonthIndex + 1, 1))}>›</button>
+        </header>
+        <div className="calendar-mini-weekdays">{"日一二三四五六".split("").map((day) => <span key={day}>{day}</span>)}</div>
+        <div className="calendar-mini-days">
+          {miniDates.map(({ date, inMonth }) => (
+            <button
+              type="button"
+              key={date}
+              aria-label={`快速前往 ${date}`}
+              aria-current={date === selected ? "date" : undefined}
+              className={[!inMonth && "other", date === selected && "selected", date === todayKey && "today"].filter(Boolean).join(" ")}
+              onClick={() => {
+                setSelected(date);
+                const targetMonth = new Date(date + "T12:00:00");
+                const firstOfMonth = new Date(targetMonth.getFullYear(), targetMonth.getMonth(), 1);
+                setMonth(firstOfMonth);
+                setMiniMonth(firstOfMonth);
+                setPopover(null);
+              }}
+            >{Number(date.slice(-2))}</button>
+          ))}
+        </div>
+      </aside>
+      <div className="calendar-main">
       {calendarView === "month" ? <div className="calendar panel">
         <div className="week">
           {["日", "一", "二", "三", "四", "五", "六"].map((x) => (
@@ -708,6 +811,10 @@ function CalendarPage({
             const openDate = (target: HTMLElement) => {
               const r = target.getBoundingClientRect();
               setSelected(key);
+              const targetDate = new Date(key + "T12:00:00");
+              const targetMonth = new Date(targetDate.getFullYear(), targetDate.getMonth(), 1);
+              setMonth(targetMonth);
+              setMiniMonth(targetMonth);
               setPopover({
                 x: Math.min(innerWidth - 340, Math.max(235, r.left)),
                 y: r.bottom + 360 > innerHeight ? Math.max(10, r.top - 330) : r.bottom + 8,
@@ -761,7 +868,7 @@ function CalendarPage({
               const day = new Date(`${date}T12:00:00`);
               return (
                 <header key={date} className={date === todayKey ? "today" : ""}>
-                  <button type="button" onClick={(event) => { setSelected(date); setPopover({ x: event.currentTarget.getBoundingClientRect().left, y: event.currentTarget.getBoundingClientRect().bottom }); }}>
+                  <button type="button" onClick={(event) => { setSelected(date); const targetMonth = new Date(date + "T12:00:00"); const firstOfMonth = new Date(targetMonth.getFullYear(), targetMonth.getMonth(), 1); setMonth(firstOfMonth); setMiniMonth(firstOfMonth); setPopover({ x: event.currentTarget.getBoundingClientRect().left, y: event.currentTarget.getBoundingClientRect().bottom }); }}>
                     <b>{day.getDate()}</b><span>{["日", "一", "二", "三", "四", "五", "六"][day.getDay()]}</span>
                   </button>
                   <button type="button" className="calendar-week-add-note" aria-label={`新增 ${date} 記事`} title="新增記事" onClick={() => openNote(date)}>＋</button>
@@ -810,6 +917,8 @@ function CalendarPage({
           </div>
         </div>
       )}
+      </div>
+      </div>
       {popover && (
         <div
           className="calendar-pop"
@@ -911,25 +1020,33 @@ function CalendarPage({
       {todoEditor !== undefined && (
         <TodoEditor
           value={todoEditor}
+          initialRecordDate={todoEditorDate}
+          onOpenRecords={(todo, date) => {
+            setProgressEditor(todo);
+            setProgressDate(date);
+            setTodoEditor(undefined);
+          }}
           onClose={() => setTodoEditor(undefined)}
-          onSave={(todo) => {
-            setState((current) => ({
-              ...current,
-              todos: current.todos.some((item) => item.id === todo.id)
-                ? current.todos.map((item) => item.id === todo.id
-                    ? { ...todo, pausePeriods: changeTodoStatus(item, todo.status).pausePeriods }
-                    : item)
-                : [...current.todos, todo],
-            }));
+          onSave={(todo, options) => {
+            setState((current) => {
+              const existing = current.todos.find((item) => item.id === todo.id);
+              const next = prepareTodoForSave(existing, todo, dateKey(new Date()), options);
+              const todos = existing
+                ? current.todos.map((item) => item.id === todo.id ? next : item)
+                : [...current.todos, next];
+              return { ...current, todos: promoteDueTodos(todos, dateKey(new Date())) };
+            });
             setTodoEditor(undefined);
           }}
         />
       )}
       {progressEditor && (
-        <ProgressTaskDetail
+        <TodoRecords
           todo={state.todos.find((item) => item.id === progressEditor.id) || progressEditor}
+          initialDate={progressDate}
           onClose={() => setProgressEditor(null)}
           onEdit={() => {
+            setTodoEditorDate(progressDate);
             setTodoEditor(progressEditor);
             setProgressEditor(null);
           }}
@@ -944,6 +1061,11 @@ function CalendarPage({
           todo={occurrenceEditor.todo}
           occurrenceDate={occurrenceEditor.occurrenceDate}
           displayDate={occurrenceEditor.displayDate}
+          onOpenRecords={(todo, date) => {
+            setProgressEditor(todo);
+            setProgressDate(date);
+            setOccurrenceEditor(null);
+          }}
           onClose={() => setOccurrenceEditor(null)}
           onSave={(todo) => {
             setState((current) => ({
@@ -1084,6 +1206,7 @@ function TodoPage({
 }) {
   const [editing, setEditing] = useState<Todo | null | undefined>(undefined);
   const [progressTaskId, setProgressTaskId] = useState<string | null>(null);
+  const [recordsDate, setRecordsDate] = useState(todayKey);
   const [showCompleted, setShowCompleted] = useState(false);
   const dragged = useRef(false);
   const pointerDrag = useRef<{
@@ -1100,17 +1223,16 @@ function TodoPage({
     over?: TodoStatus | "archive";
   } | null>(null);
   const todos = state.todos.filter((x) => !x.deletedAt);
-  const save = (todo: Todo) =>
+  const save = (todo: Todo, options?: { overwriteProgressCalendarHistory?: boolean }) =>
     setState((s) => {
       const existing = s.todos.find((item) => item.id === todo.id);
-      const next = existing
-        ? { ...todo, pausePeriods: changeTodoStatus(existing, todo.status).pausePeriods }
-        : changeTodoStatus(todo, todo.status);
+      const next = prepareTodoForSave(existing, todo, dateKey(new Date()), options);
+      const todos = promoteDueTodos(existing
+        ? s.todos.map((item) => item.id === todo.id ? next : item)
+        : [...s.todos, next], dateKey(new Date()));
       return {
         ...s,
-        todos: existing
-          ? s.todos.map((item) => item.id === todo.id ? next : item)
-          : [...s.todos, next],
+        todos,
       };
     });
   const move = (id: string, status: TodoStatus) =>
@@ -1229,15 +1351,19 @@ function TodoPage({
             <div className="todo-list">
               {todos
                 .filter((x) => x.status === status && !x.archivedAt)
-                .sort((a, b) =>
-                  status === "doing" && isMultiDayTodo(a) !== isMultiDayTodo(b)
-                    ? isMultiDayTodo(a) ? 1 : -1
-                    : a.position - b.position,
-                )
-                .map((todo) => (
+                .sort((a, b) => {
+                  const isRecurring = (todo: Todo) => todo.kind === "recurring" || Boolean(todo.recurrence?.rules.length);
+                  return status === "doing" && isRecurring(a) !== isRecurring(b)
+                    ? isRecurring(a) ? 1 : -1
+                    : a.position - b.position;
+                })
+                .map((todo) => {
+                  const recurring = todo.kind === "recurring" || Boolean(todo.recurrence?.rules.length);
+                  const compact = status === "doing" && recurring;
+                  return (
                   <article
                     key={todo.id}
-                    className={`todo-card ${todo.color} ${status === "done" ? "completed" : ""} ${isMultiDayTodo(todo) ? "multi-day" : ""} ${todo.kind === "progress" ? "progress-task" : ""}`}
+                    className={["todo-card", todo.color, status === "done" && "completed", recurring && compact && "recurring-compact", todo.kind === "progress" && "progress-task"].filter(Boolean).join(" ")}
                     style={paletteStyle(todo.color)}
                     onPointerDown={(e) => pointerDown(e, todo)}
                     onPointerMove={pointerMove}
@@ -1248,37 +1374,46 @@ function TodoPage({
                         dragged.current = false;
                         return;
                       }
-                      if (todo.kind === "progress") setProgressTaskId(todo.id);
-                      else setEditing(todo);
+                      setEditing(todo);
                     }}
                   >
-                    <small>
-                      {todo.kind === "progress"
-                        ? todo.dueDate ? `期限 ${todo.dueDate}` : "長期進度任務"
-                        : todo.recurrence
-                          ? recurrenceSummary(todo.recurrence.rules[0])
-                          : todo.startDate
-                        ? `${todo.startDate}${todo.endDate && todo.endDate !== todo.startDate ? ` → ${todo.endDate}` : ""}`
-                        : "沒有期限"}
-                    </small>
-                    <h4>{todo.title}</h4>
-                    {todo.kind === "progress" ? (
-                      todo.progressLogs?.length ? (
-                        <p className="progress-preview">{todo.progressLogs.slice().sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt))[0].text}</p>
-                      ) : <p className="progress-preview muted">還沒有進度紀錄</p>
-                    ) : todo.description && <p>{todo.description}</p>}
-                    {isMultiDayTodo(todo) && (
-                      <small className="multi-day-progress">{getMultiDayCompletedCount(todo)}/{getMultiDayLength(todo)} 天完成</small>
+                    {todo.recurrence && compact ? (
+                      <div className="recurring-compact-row">
+                        <h4 title={todo.title}>{todo.title}</h4>
+                        <button type="button" aria-label={`刪除 ${todo.title}`} onClick={(e) => { e.stopPropagation(); remove(todo.id); }}>刪除</button>
+                      </div>
+                    ) : (
+                      <>
+                        <small>
+                          {todo.kind === "progress"
+                            ? todo.dueDate ? `期限 ${todo.dueDate}` : "重點進度任務"
+                            : todo.recurrence
+                              ? recurrenceSummary(todo.recurrence.rules[0])
+                              : todo.startDate
+                            ? `${todo.startDate}${todo.endDate && todo.endDate !== todo.startDate ? ` → ${todo.endDate}` : ""}`
+                            : "沒有期限"}
+                        </small>
+                        <h4>{todo.title}</h4>
+                        {todo.kind === "progress" ? (
+                          todo.progressLogs?.length ? (
+                            <p className="progress-preview">{todo.progressLogs.slice().sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt))[0].text}</p>
+                          ) : <p className="progress-preview muted">還沒有進度紀錄</p>
+                        ) : todo.description && !compact && <p>{todo.description}</p>}
+                        {isMultiDayTodo(todo) && (
+                          <small className="multi-day-progress">{getMultiDayCompletedCount(todo)}/{getMultiDayLength(todo)} 天完成</small>
+                        )}
+                        <footer>
+                          <span>{statusName[status]}</span>
+                          <span className="todo-card-actions">
+                            {status === "done" && <button onClick={(e) => { e.stopPropagation(); setState((current) => ({ ...current, todos: current.todos.map((item) => item.id === todo.id ? { ...item, archivedAt: new Date().toISOString() } : item) })); }}>移入已完成</button>}
+                            <button onClick={(e) => { e.stopPropagation(); remove(todo.id); }}>刪除</button>
+                          </span>
+                        </footer>
+                      </>
                     )}
-                    <footer>
-                      <span>{statusName[status]}</span>
-                      <span className="todo-card-actions">
-                        {status === "done" && <button onClick={(e) => { e.stopPropagation(); setState((current) => ({ ...current, todos: current.todos.map((item) => item.id === todo.id ? { ...item, archivedAt: new Date().toISOString() } : item) })); }}>移入已完成</button>}
-                        <button onClick={(e) => { e.stopPropagation(); remove(todo.id); }}>刪除</button>
-                      </span>
-                    </footer>
                   </article>
-                ))}
+                  );
+                })}
             </div>
           </section>
         ))}
@@ -1316,15 +1451,21 @@ function TodoPage({
         <TodoEditor
           value={editing}
           onClose={() => setEditing(undefined)}
-          onSave={(v) => {
-            save(v);
+          onSave={(v, options) => {
+            save(v, options);
+            setEditing(undefined);
+          }}
+          onOpenRecords={(todo, date) => {
+            setRecordsDate(date);
+            setProgressTaskId(todo.id);
             setEditing(undefined);
           }}
         />
       )}
       {progressTaskId && (
-        <ProgressTaskDetail
+        <TodoRecords
           todo={todos.find((todo) => todo.id === progressTaskId)!}
+          initialDate={recordsDate}
           onClose={() => setProgressTaskId(null)}
           onEdit={() => {
             const todo = todos.find((item) => item.id === progressTaskId);
@@ -1344,10 +1485,14 @@ function TodoEditor({
   value,
   onClose,
   onSave,
+  onOpenRecords,
+  initialRecordDate,
 }: {
   value: Todo | null;
   onClose: () => void;
-  onSave: (v: Todo) => void;
+  onSave: (v: Todo, options?: { overwriteProgressCalendarHistory?: boolean }) => void;
+  onOpenRecords?: (todo: Todo, date: string) => void;
+  initialRecordDate?: string;
 }) {
   const [form, setForm] = useState<Todo>(
     value || {
@@ -1363,30 +1508,37 @@ function TodoEditor({
     },
   );
   const firstRule = value?.recurrence?.rules[0];
-  const [kind, setKind] = useState<TodoKind>(value?.kind || "task");
-  const [frequency, setFrequency] = useState<"none" | RecurrenceFrequency>(firstRule?.frequency || "none");
+  const initialKind: TodoKind = value?.kind === "progress" ? "progress" : value?.recurrence?.rules?.length ? "recurring" : value?.kind || "task";
+  const [kind, setKind] = useState<TodoKind>(initialKind);
+  const [frequency, setFrequency] = useState<RecurrenceFrequency>(firstRule?.frequency || "daily");
   const [weekdays, setWeekdays] = useState<number[]>(firstRule?.weekdays || []);
   const [dayOfMonth, setDayOfMonth] = useState(firstRule?.dayOfMonth || 1);
   const [repeatFrom, setRepeatFrom] = useState(firstRule?.fromDate || value?.startDate || todayKey);
   const [repeatUntil, setRepeatUntil] = useState(firstRule?.untilDate || "");
   const [repeatForever, setRepeatForever] = useState(!firstRule?.untilDate);
-  const [hasFixedTime, setHasFixedTime] = useState(Boolean(firstRule?.startTime || value?.startTime));
   const [startTime, setStartTime] = useState(firstRule?.startTime || value?.startTime || "");
   const [endTime, setEndTime] = useState(firstRule?.endTime || value?.endTime || "");
-  const startDate = form.startDate || "";
-  const endDate = form.endDate || "";
-  const isRange = frequency === "none" && startDate && endDate && startDate < endDate;
+  const startDate = form.startDate || form.dueDate || form.endDate || "";
+  const endDate = form.endDate || form.dueDate || form.startDate || "";
+  const [overwriteProgressCalendarHistory, setOverwriteProgressCalendarHistory] = useState(false);
+  const progressDateRangeChanged = Boolean(
+    value && initialKind === "progress" && kind === "progress" &&
+    (startDate !== (value.startDate || value.dueDate || value.endDate || "") ||
+      endDate !== (value.endDate || value.dueDate || value.startDate || "")),
+  );
   const dateRangeValid = !startDate || !endDate || startDate <= endDate;
-  const timeValid = isRange || !hasFixedTime || Boolean(startTime && (!endTime || endTime > startTime));
-  const recurrenceValid = frequency === "none" || Boolean(
+  const timeValid = (!startTime && !endTime) || Boolean(startTime && endTime && endTime > startTime);
+  const recurrenceValid = kind !== "recurring" || Boolean(
     repeatFrom &&
       (repeatForever || (repeatUntil && repeatUntil >= repeatFrom)) &&
       (frequency !== "weekly" || weekdays.length > 0) &&
       (frequency !== "monthly" || (dayOfMonth >= 1 && dayOfMonth <= 31)),
   );
+  const longTermDatesValid = kind !== "progress" || Boolean(startDate && endDate && startDate <= endDate);
   const valid = Boolean(
     form.title.trim() &&
-      (kind === "progress" || (dateRangeValid && recurrenceValid && timeValid && (frequency !== "none" || !hasFixedTime || startDate || endDate))),
+      dateRangeValid && longTermDatesValid &&
+      (kind === "progress" || (kind === "recurring" ? recurrenceValid && timeValid : timeValid)),
   );
   const toggleWeekday = (day: number) => setWeekdays((current) =>
     current.includes(day) ? current.filter((value) => value !== day) : [...current, day].sort((a, b) => a - b),
@@ -1402,29 +1554,29 @@ function TodoEditor({
       onSave({
         ...common,
         kind: "progress",
-        dueDate: form.dueDate || endDate || startDate,
-        startDate: form.dueDate || endDate || startDate,
-        endDate: form.dueDate || endDate || startDate,
+        dueDate: endDate,
+        startDate,
+        endDate,
         startTime: undefined,
         endTime: undefined,
         recurrence: undefined,
         progressLogs: form.progressLogs || [],
-      });
+      }, { overwriteProgressCalendarHistory });
       return;
     }
-    if (frequency !== "none") {
+    if (kind === "recurring") {
       const rule: RecurrenceRuleSegment = {
         fromDate: repeatFrom,
         ...(repeatForever ? {} : { untilDate: repeatUntil }),
         frequency,
         ...(frequency === "weekly" ? { weekdays } : {}),
         ...(frequency === "monthly" ? { dayOfMonth } : {}),
-        ...(hasFixedTime ? { startTime, ...(endTime ? { endTime } : {}) } : {}),
+        ...(startTime && endTime ? { startTime, endTime } : {}),
         color: form.color,
       };
       onSave({
         ...common,
-        status: isRange ? "doing" : form.status,
+        status: form.status,
         dueDate: repeatForever ? "" : repeatUntil,
         startDate: repeatFrom,
         endDate: repeatForever ? "" : repeatUntil,
@@ -1440,15 +1592,14 @@ function TodoEditor({
     }
     const normalizedStart = startDate || endDate;
     const normalizedEnd = endDate || startDate;
-    const multiDay = Boolean(normalizedStart && normalizedEnd && normalizedStart < normalizedEnd);
     onSave({
       ...common,
-      status: multiDay && form.status !== "done" ? "doing" : form.status,
+      kind: "task",
       startDate: normalizedStart,
       endDate: normalizedEnd,
       dueDate: normalizedEnd || normalizedStart,
-      startTime: hasFixedTime && !multiDay ? startTime : undefined,
-      endTime: hasFixedTime && !multiDay && endTime ? endTime : undefined,
+      startTime: startTime && endTime ? startTime : undefined,
+      endTime: startTime && endTime ? endTime : undefined,
       recurrence: undefined,
     });
   };
@@ -1477,9 +1628,14 @@ function TodoEditor({
         />
       </Field>
       <Field label="任務類型">
-        <select value={kind} onChange={(e) => setKind(e.target.value as TodoKind)}>
+        <select value={kind} onChange={(e) => {
+          const next = e.target.value as TodoKind;
+          setKind(next);
+          if (next === "recurring" && !value?.recurrence) setFrequency("daily");
+        }}>
           <option value="task">一般待辦</option>
-          <option value="progress">長期進度任務</option>
+          <option value="recurring">週期代辦</option>
+          <option value="progress">重點代辦</option>
         </select>
       </Field>
       <Field label="描述">
@@ -1503,75 +1659,81 @@ function TodoEditor({
         </select>
       </Field>
       {kind === "progress" ? (
-        <Field label="期限（選填）">
-          <input
-            type="date"
-            aria-label="期限"
-            value={form.dueDate || ""}
-            onChange={(e) => setForm({ ...form, dueDate: e.target.value })}
-          />
-        </Field>
-      ) : (
         <>
-          <Field label="重複頻率">
-            <select aria-label="重複頻率" value={frequency} onChange={(e) => {
-              const next = e.target.value as "none" | RecurrenceFrequency;
+          <div className="field-row">
+            <Field label="開始日期">
+              <input type="date" aria-label="重點代辦開始日期" value={startDate} onChange={(event) => setForm({ ...form, startDate: event.target.value })} />
+            </Field>
+            <Field label="結束日期">
+              <input type="date" aria-label="重點代辦結束日期" min={startDate || undefined} value={endDate} onChange={(event) => setForm({ ...form, endDate: event.target.value, dueDate: event.target.value })} />
+            </Field>
+          </div>
+          <small className="field-hint">日期範圍中的每天都會顯示在行事曆。</small>
+          {progressDateRangeChanged && (
+            <label className="field-hint progress-history-option">
+              <input
+                type="checkbox"
+                checked={overwriteProgressCalendarHistory}
+                onChange={(event) => setOverwriteProgressCalendarHistory(event.target.checked)}
+              />
+              重建行事曆歷程，清除原有空檔並依新日期範圍連續顯示
+            </label>
+          )}
+        </>
+      ) : kind === "recurring" ? (
+        <>
+          <Field label="週期頻率">
+            <select aria-label="重複頻率" value={frequency} onChange={(event) => {
+              const next = event.target.value as RecurrenceFrequency;
               setFrequency(next);
-              if (next === "weekly" && weekdays.length === 0) setWeekdays([new Date(`${repeatFrom}T12:00:00`).getDay()]);
+              if (next === "weekly" && weekdays.length === 0) setWeekdays([new Date(repeatFrom + "T12:00:00").getDay()]);
             }}>
-              <option value="none">不重複</option>
               <option value="daily">每日</option>
               <option value="weekly">每週</option>
               <option value="monthly">每月</option>
             </select>
           </Field>
-          {frequency === "none" ? (
-            <div className="field-row">
-              <Field label="開始日期（選填）">
-                <input type="date" aria-label="起始日" value={startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value, dueDate: form.dueDate || e.target.value })} />
-              </Field>
-              <Field label="截止日期（選填）">
-                <input type="date" aria-label="截止日" min={startDate || undefined} value={endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value, dueDate: e.target.value })} />
-              </Field>
-            </div>
-          ) : (
-            <>
-              <div className="field-row">
-                <Field label="開始日期">
-                  <input type="date" aria-label="重複開始日期" value={repeatFrom} onChange={(e) => setRepeatFrom(e.target.value)} />
-                </Field>
-                <Field label="重複期限">
-                  <select aria-label="重複期限" value={repeatForever ? "forever" : "until"} onChange={(e) => setRepeatForever(e.target.value === "forever")}>
-                    <option value="forever">永不結束</option>
-                    <option value="until">截止日</option>
-                  </select>
-                </Field>
+          <div className="field-row">
+            <Field label="開始日期">
+              <input type="date" aria-label="重複開始日期" value={repeatFrom} onChange={(event) => setRepeatFrom(event.target.value)} />
+            </Field>
+            <Field label="週期期限">
+              <select aria-label="重複期限" value={repeatForever ? "forever" : "until"} onChange={(event) => setRepeatForever(event.target.value === "forever")}>
+                <option value="forever">永不結束</option>
+                <option value="until">設定截止日</option>
+              </select>
+            </Field>
+          </div>
+          {!repeatForever && <Field label="截止日期"><input type="date" aria-label="重複截止日期" min={repeatFrom} value={repeatUntil} onChange={(event) => setRepeatUntil(event.target.value)} /></Field>}
+          {frequency === "weekly" && (
+            <Field label="重複星期">
+              <div className="weekday-picks" role="group" aria-label="重複星期">
+                {weekdayLabels.map((label, day) => <button type="button" key={day} aria-pressed={weekdays.includes(day)} className={weekdays.includes(day) ? "selected" : ""} onClick={() => toggleWeekday(day)}>週{label}</button>)}
               </div>
-              {!repeatForever && <Field label="截止日期"><input type="date" aria-label="重複截止日期" min={repeatFrom} value={repeatUntil} onChange={(e) => setRepeatUntil(e.target.value)} /></Field>}
-              {frequency === "weekly" && (
-                <Field label="重複星期">
-                  <div className="weekday-picks" role="group" aria-label="重複星期">
-                    {weekdayLabels.map((label, day) => <button type="button" key={day} aria-pressed={weekdays.includes(day)} className={weekdays.includes(day) ? "selected" : ""} onClick={() => toggleWeekday(day)}>週{label}</button>)}
-                  </div>
-                </Field>
-              )}
-              {frequency === "monthly" && <Field label="每月日期"><input aria-label="每月日期" type="number" min={1} max={31} value={dayOfMonth} onChange={(e) => setDayOfMonth(Math.max(1, Math.min(31, Number(e.target.value) || 1)))} /><small className="field-hint">當月沒有該日期時，改在月底出現。</small></Field>}
-            </>
+            </Field>
           )}
-          {!(frequency === "none" && isRange) && (
-            <label className="inline-check">
-              <input type="checkbox" checked={hasFixedTime} onChange={(e) => setHasFixedTime(e.target.checked)} />
-              <span>{frequency === "none" ? "設定固定時間，顯示在行事曆時間軸" : "設定固定時間，顯示在週／日時間軸"}</span>
-            </label>
-          )}
-          {hasFixedTime && !(frequency === "none" && isRange) && (
-            <div className="field-row">
-              <Field label="開始時間"><input aria-label="待辦開始時間" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} /></Field>
-              <Field label="結束時間（選填）"><input aria-label="待辦結束時間" type="time" min={startTime || undefined} value={endTime} onChange={(e) => setEndTime(e.target.value)} /></Field>
-            </div>
-          )}
+          {frequency === "monthly" && <Field label="每月日期"><input aria-label="每月日期" type="number" min={1} max={31} value={dayOfMonth} onChange={(event) => setDayOfMonth(Math.max(1, Math.min(31, Number(event.target.value) || 1)))} /><small className="field-hint">當月沒有該日期時，改在月底出現。</small></Field>}
+          <div className="field-row">
+            <Field label="開始時間（選填）"><input aria-label="待辦開始時間" type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} /></Field>
+            <Field label="結束時間（選填）"><input aria-label="待辦結束時間" type="time" min={startTime || undefined} value={endTime} onChange={(event) => setEndTime(event.target.value)} /></Field>
+          </div>
+          {(startTime || endTime) && !timeValid && <small className="calendar-data-error">請同時填入開始與結束時間，且結束時間晚於開始時間。</small>}
+          {value && <button type="button" className="secondary todo-records-open" onClick={() => onOpenRecords?.(form, initialRecordDate || todayKey)}>查看每日紀錄</button>}
+        </>
+      ) : (
+        <>
+          <div className="field-row">
+            <Field label="開始日期（選填）"><input type="date" aria-label="一般待辦開始日期" value={startDate} onChange={(event) => setForm({ ...form, startDate: event.target.value, dueDate: form.dueDate || event.target.value })} /></Field>
+            <Field label="結束日期（選填）"><input type="date" aria-label="一般待辦結束日期" min={startDate || undefined} value={endDate} onChange={(event) => setForm({ ...form, endDate: event.target.value, dueDate: event.target.value })} /></Field>
+          </div>
+          <div className="field-row">
+            <Field label="開始時間（選填）"><input aria-label="待辦開始時間" type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} /></Field>
+            <Field label="結束時間（選填）"><input aria-label="待辦結束時間" type="time" min={startTime || undefined} value={endTime} onChange={(event) => setEndTime(event.target.value)} /></Field>
+          </div>
+          {(startTime || endTime) && !timeValid && <small className="calendar-data-error">請同時填入開始與結束時間，且結束時間晚於開始時間。</small>}
         </>
       )}
+      {kind === "progress" && value && <button type="button" className="secondary todo-records-open" onClick={() => onOpenRecords?.(form, initialRecordDate || todayKey)}>查看進度紀錄</button>}
       <Field label="顏色">
         <div className="color-picks">
           {colors.map((c) => (
@@ -1591,55 +1753,61 @@ function TodoEditor({
   );
 }
 
-function ProgressTaskDetail({
+function TodoRecords({
   todo,
+  initialDate,
   onClose,
   onEdit,
   onSave,
 }: {
   todo: Todo;
+  initialDate: string;
   onClose: () => void;
   onEdit: () => void;
   onSave: (todo: Todo) => void;
 }) {
-  const [logs, setLogs] = useState(todo.progressLogs || []);
+  const [date, setDate] = useState(initialDate || todayKey);
   const [draft, setDraft] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
-  const saveLogs = (next: Todo["progressLogs"]) => {
-    setLogs(next || []);
-    onSave({ ...todo, progressLogs: next || [] });
-  };
+  const [editDate, setEditDate] = useState("");
+  const logs = todo.progressLogs || [];
+  const saveLogs = (next: Todo["progressLogs"]) => onSave({ ...todo, progressLogs: next || [] });
   const addLog = () => {
-    if (!draft.trim()) return;
+    if (!draft.trim() || !date) return;
     saveLogs([
       ...logs,
-      { id: makeId("progress"), date: todayKey, text: draft.trim(), createdAt: new Date().toISOString() },
+      { id: makeId("progress"), date, text: draft.trim(), createdAt: new Date().toISOString() },
     ]);
     setDraft("");
   };
   const sortedLogs = logs.slice().sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+  const longTerm = todo.kind === "progress";
   return (
     <Modal
-      eyebrow="LONG-TERM TASK"
-      title={todo.title}
+      eyebrow={longTerm ? "LONG-TERM TODO" : "RECURRING TODO"}
+      title={longTerm ? `「${todo.title}」進度紀錄` : `「${todo.title}」每日紀錄`}
       onClose={onClose}
-      footer={<><button className="secondary" onClick={onEdit}>編輯任務</button><button onClick={onClose}>完成</button></>}
+      className="todo-records-modal"
+      footer={<><button className="secondary" onClick={onEdit}>回到編輯代辦</button><button onClick={onClose}>完成</button></>}
     >
       {todo.description && <p className="progress-task-description">{todo.description}</p>}
       <section className="progress-log-compose">
-        <Field label={`新增進度紀錄 · ${todayKey}`}>
-          <textarea aria-label="新增進度紀錄" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="記下目前推進到哪裡……" />
-        </Field>
-        <button type="button" disabled={!draft.trim()} onClick={addLog}>新增紀錄</button>
+        <div className="progress-log-compose-date">
+          <input type="date" aria-label="紀錄日期" value={date} onChange={(event) => setDate(event.target.value)} />
+        </div>
+        <textarea className="progress-log-draft" aria-label="新增進度紀錄" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={longTerm ? "記下這一天的進度……" : "記下這一天的狀況……"} />
+        <div className="progress-log-compose-actions">
+          <button type="button" disabled={!draft.trim() || !date} onClick={addLog}>新增紀錄</button>
+        </div>
       </section>
       <div className="progress-log-list">
         {sortedLogs.length ? sortedLogs.map((log) => (
-          <article key={log.id} className="progress-log">
-            <header><time>{log.date}{log.updatedAt ? " · 已編輯" : ""}</time><span><button type="button" onClick={() => { setEditingId(log.id); setEditDraft(log.text); }}>編輯</button><button type="button" onClick={() => { if (confirm("確定刪除這筆進度紀錄？")) saveLogs(logs.filter((item) => item.id !== log.id)); }}>刪除</button></span></header>
-            {editingId === log.id ? <><textarea aria-label={`編輯紀錄 ${log.date}`} value={editDraft} onChange={(e) => setEditDraft(e.target.value)} /><div className="progress-log-actions"><button type="button" onClick={() => { saveLogs(logs.map((item) => item.id === log.id ? { ...item, text: editDraft.trim(), updatedAt: new Date().toISOString() } : item)); setEditingId(null); }}>儲存</button><button type="button" onClick={() => setEditingId(null)}>取消</button></div></> : <p>{log.text}</p>}
+          <article key={log.id} className={`progress-log ${editingId === log.id ? "editing" : ""}`}>
+            <header><time>{log.date}{log.updatedAt ? " · 已編輯" : ""}</time><span><button type="button" onClick={() => { setEditingId(log.id); setEditDraft(log.text); setEditDate(log.date); }}>編輯</button><button type="button" onClick={() => { if (confirm("確定刪除這筆紀錄？")) saveLogs(logs.filter((item) => item.id !== log.id)); }}>刪除</button></span></header>
+            {editingId === log.id ? <div className="progress-log-edit-form"><input aria-label={`編輯紀錄日期 ${log.date}`} type="date" value={editDate} onChange={(event) => setEditDate(event.target.value)} /><textarea aria-label={`編輯紀錄 ${log.date}`} value={editDraft} onChange={(event) => setEditDraft(event.target.value)} /><div className="progress-log-actions"><button type="button" onClick={() => { if (!editDraft.trim() || !editDate) return; saveLogs(logs.map((item) => item.id === log.id ? { ...item, date: editDate, text: editDraft.trim(), updatedAt: new Date().toISOString() } : item)); setEditingId(null); }}>儲存</button><button type="button" onClick={() => setEditingId(null)}>取消</button></div></div> : <p>{log.text}</p>}
           </article>
-        )) : <Empty text="還沒有進度紀錄。" />}
+        )) : <Empty text="還沒有紀錄。" />}
       </div>
     </Modal>
   );
@@ -1651,12 +1819,14 @@ function TodoOccurrenceEditor({
   displayDate,
   onClose,
   onSave,
+  onOpenRecords,
 }: {
   todo: Todo;
   occurrenceDate: string;
   displayDate: string;
   onClose: () => void;
   onSave: (todo: Todo) => void;
+  onOpenRecords?: (todo: Todo, date: string) => void;
 }) {
   const rule = getRuleForDate(todo.recurrence?.rules || [], occurrenceDate);
   const previousOverride = todo.recurrence?.overrides?.[occurrenceDate] || {};
@@ -1727,6 +1897,7 @@ function TodoOccurrenceEditor({
         <Field label="開始時間（選填）"><input type="time" aria-label="這次開始時間" value={startTime} onChange={(e) => setStartTime(e.target.value)} /></Field>
         <Field label="結束時間（選填）"><input type="time" aria-label="這次結束時間" min={startTime || undefined} value={endTime} onChange={(e) => setEndTime(e.target.value)} /></Field>
       </div>
+      <button type="button" className="secondary todo-records-open" onClick={() => onOpenRecords?.(todo, occurrenceDate)}>查看這天紀錄</button>
       <Field label="修改範圍"><select aria-label="修改範圍" value={scope} onChange={(e) => setScope(e.target.value as typeof scope)}>
         <option value="occurrence">只修改這一次</option>
         <option value="future">從這次起修改後續</option>
@@ -1880,6 +2051,7 @@ function DiaryPage({
           text={entry.body}
           ariaLabel="日記內容"
           placeholder="慢慢寫，不用一次寫完……"
+          contextualToolbar
           onChange={(bodyHtml, body) =>
             save({
               ...entry,
@@ -2093,12 +2265,23 @@ function NotesPage({
 function InboxPage({
   state,
   setState,
+  dataDirectory,
 }: {
   state: AppState;
   setState: StateSetter;
+  dataDirectory: string;
 }) {
   const [text, setText] = useState("");
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [editingId, setEditingId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [busyItemId, setBusyItemId] = useState("");
+  const [message, setMessage] = useState("");
+  const [previewAttachment, setPreviewAttachment] = useState<{
+    attachment: InboxAttachment;
+    preview: string;
+    original: string;
+  } | null>(null);
   const inboxDrag = useRef<{
     id: string;
     startY: number;
@@ -2107,6 +2290,88 @@ function InboxPage({
   const items = state.inbox
     .filter((x) => !x.deletedAt)
     .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+  const prepareAttachments = async (files: File[]) => {
+    const attachments: InboxAttachment[] = [];
+    const failures: string[] = [];
+    for (const file of files) {
+      try {
+        const id = makeId("inbox-media");
+        const prepared = await prepareMedia(file);
+        const stored = await storeMedia(id, file, prepared.previewDataUrl, "inbox");
+        if ("originalDataUrl" in stored) {
+          attachments.push({
+            id,
+            mediaType: prepared.mediaType,
+            originalName: file.name,
+            mimeType: file.type,
+            size: file.size,
+            duration: prepared.duration,
+            dataUrl: prepared.mediaType === "video" ? stored.originalDataUrl : prepared.previewDataUrl,
+            previewDataUrl: prepared.previewDataUrl,
+          });
+        } else {
+          attachments.push({
+            id,
+            mediaType: prepared.mediaType,
+            originalName: file.name,
+            mimeType: file.type,
+            size: file.size,
+            duration: prepared.duration,
+            originalPath: stored.originalPath,
+            previewPath: stored.previewPath,
+          });
+        }
+      } catch (error) {
+        failures.push(`${file.name}：${error instanceof Error ? error.message : "匯入失敗"}`);
+      }
+    }
+    return { attachments, failures };
+  };
+  const addItem = async () => {
+    const trimmedText = text.trim();
+    if (!trimmedText && !selectedFiles.length) return;
+    setBusy(true);
+    setMessage("正在整理素材……");
+    const { attachments, failures } = await prepareAttachments(selectedFiles);
+    if (trimmedText || attachments.length) {
+      setState((current) => ({
+        ...current,
+        inbox: [
+          { id: makeId("inbox"), text: trimmedText, attachments, createdAt: new Date().toISOString(), position: 0 },
+          ...current.inbox.map((item) => ({ ...item, position: (item.position ?? 0) + 1 })),
+        ],
+      }));
+      setText("");
+      setSelectedFiles([]);
+    }
+    setMessage(failures.length ? `已加入 ${attachments.length} 個素材；${failures.join("、")}` : `已加入 ${attachments.length} 個素材`);
+    setBusy(false);
+  };
+  const addAttachments = async (itemId: string, files: File[]) => {
+    if (!files.length) return;
+    setBusyItemId(itemId);
+    const { attachments, failures } = await prepareAttachments(files);
+    if (attachments.length) {
+      setState((current) => ({
+        ...current,
+        inbox: current.inbox.map((item) => item.id === itemId
+          ? { ...item, attachments: [...(item.attachments || []), ...attachments] }
+          : item),
+      }));
+    }
+    setMessage(failures.length ? `已加入 ${attachments.length} 個素材；${failures.join("、")}` : `已加入 ${attachments.length} 個素材`);
+    setBusyItemId("");
+  };
+  const removeAttachment = (itemId: string, attachment: InboxAttachment) => {
+    if (!confirm(`要移除「${attachment.originalName}」嗎？`)) return;
+    void removeMediaFiles(attachment);
+    setState((current) => ({
+      ...current,
+      inbox: current.inbox.map((item) => item.id === itemId
+        ? { ...item, attachments: (item.attachments || []).filter((value) => value.id !== attachment.id) }
+        : item),
+    }));
+  };
   const reorder = (fromId: string, toId: string) =>
     setState((current) => {
       const ordered = current.inbox
@@ -2132,167 +2397,81 @@ function InboxPage({
         x.id === id ? { ...x, deletedAt: new Date().toISOString() } : x,
       ),
     }));
-  const convert = (id: string, type: "todo" | "diary") =>
+  const convert = (id: string, type: "todo" | "snippet") =>
     setState((s) => {
       const item = s.inbox.find((x) => x.id === id)!;
+      const title = item.text.trim() || item.attachments?.[0]?.originalName || "蒐集素材";
       return type === "todo"
         ? {
             ...s,
-            inbox: s.inbox.map((x) =>
-              x.id === id ? { ...x, deletedAt: new Date().toISOString() } : x,
-            ),
-            todos: [
-              ...s.todos,
-              {
-                id: makeId("todo"),
-                title: item.text,
-                description: "",
-                status: "todo",
-                color: "violet",
-                dueDate: "",
-                position: 99,
-              },
-            ],
+            inbox: s.inbox.map((x) => x.id === id ? { ...x, deletedAt: new Date().toISOString() } : x),
+            todos: [...s.todos, { id: makeId("todo"), title, description: "", status: "todo", color: "violet", dueDate: "", position: 99 }],
           }
         : {
             ...s,
-            inbox: s.inbox.map((x) =>
-              x.id === id ? { ...x, deletedAt: new Date().toISOString() } : x,
-            ),
+            inbox: s.inbox.map((x) => x.id === id ? { ...x, deletedAt: new Date().toISOString() } : x),
             diaries: s.diaries.some((x) => x.date === todayKey)
-              ? s.diaries.map((x) =>
-                  x.date === todayKey
-                    ? {
-                        ...x,
-                        snippets: [
-                          ...x.snippets,
-                          {
-                            id: makeId("snippet"),
-                            text: item.text,
-                            createdAt: new Date().toISOString(),
-                          },
-                        ],
-                      }
-                    : x,
-                )
-              : [
-                  ...s.diaries,
-                  {
-                    date: todayKey,
-                    title: "",
-                    body: "",
-                    updatedAt: new Date().toISOString(),
-                    snippets: [
-                      {
-                        id: makeId("snippet"),
-                        text: item.text,
-                        createdAt: new Date().toISOString(),
-                      },
-                    ],
-                  },
-                ],
+              ? s.diaries.map((x) => x.date === todayKey ? { ...x, snippets: [...x.snippets, { id: makeId("snippet"), text: title, createdAt: new Date().toISOString() }] } : x)
+              : [...s.diaries, { date: todayKey, title: "", body: "", updatedAt: new Date().toISOString(), snippets: [{ id: makeId("snippet"), text: title, createdAt: new Date().toISOString() }] }],
           };
     });
   return (
     <div className="page inbox-page">
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (!text.trim()) return;
-          setState((s) => ({
-            ...s,
-            inbox: [
-              {
-                id: makeId("inbox"),
-                text: text.trim(),
-                createdAt: new Date().toISOString(),
-                position: 0,
-              },
-              ...s.inbox.map((item) => ({
-                ...item,
-                position: (item.position ?? 0) + 1,
-              })),
-            ],
-          }));
-          setText("");
-        }}
-      >
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="先丟進來，之後再整理……"
-        />
-        <button disabled={!text.trim()}>加入收集箱</button>
+      <form onSubmit={(event) => { event.preventDefault(); void addItem(); }}>
+        <div className="inbox-add-fields">
+          <input value={text} onChange={(event) => setText(event.target.value)} placeholder="先丟進來，之後再整理……" />
+          <label className="inbox-file-picker inbox-add-media">新增影音<input aria-label="新增影音" type="file" accept="image/*,video/*" multiple onChange={(event) => { setSelectedFiles((current) => [...current, ...Array.from(event.target.files || [])]); event.target.value = ""; }} /></label>
+          {selectedFiles.length > 0 && <div className="inbox-selected-files">{selectedFiles.map((file, index) => <button type="button" key={`${file.name}-${index}`} onClick={() => setSelectedFiles((current) => current.filter((_, itemIndex) => itemIndex !== index))}>{file.name} ×</button>)}</div>}
+          {message && <small className="inbox-import-message">{message}</small>}
+        </div>
+        <button disabled={busy || (!text.trim() && !selectedFiles.length)}>{busy ? "整理中……" : "加入收集箱"}</button>
       </form>
       <div className="inbox-items">
-        {items.map((x) => (
-          <article key={x.id} data-inbox-sort={x.id}>
-            <span
-              className="sort-handle"
-              onPointerDown={(event) => {
-                event.currentTarget.setPointerCapture(event.pointerId);
-                inboxDrag.current = {
-                  id: x.id,
-                  startY: event.clientY,
-                  active: false,
-                };
-              }}
-              onPointerMove={(event) => {
-                if (!inboxDrag.current) return;
-                if (Math.abs(event.clientY - inboxDrag.current.startY) > 5)
-                  inboxDrag.current.active = true;
-              }}
-              onPointerUp={(event) => {
-                const drag = inboxDrag.current;
-                const target = document
-                  .elementFromPoint(event.clientX, event.clientY)
-                  ?.closest<HTMLElement>("[data-inbox-sort]")
-                  ?.dataset.inboxSort;
-                inboxDrag.current = null;
-                if (drag?.active && target) reorder(drag.id, target);
-              }}
-            >
-              ⋮⋮
-            </span>
-            <div>
-              {editingId === x.id ? (
-                <textarea
-                  className="inbox-edit-area"
-                  autoFocus
-                  value={x.text}
-                  onChange={(event) =>
-                    setState((current) => ({
-                      ...current,
-                      inbox: current.inbox.map((item) =>
-                        item.id === x.id
-                          ? { ...item, text: event.target.value }
-                          : item,
-                      ),
-                    }))
-                  }
-                  onKeyDown={(event) => {
-                    if ((event.ctrlKey || event.metaKey) && event.key === "Enter")
-                      setEditingId("");
-                  }}
-                />
-              ) : (
-                <strong>{x.text}</strong>
-              )}
-              <small>{new Date(x.createdAt).toLocaleString("zh-TW")}</small>
+        {items.map((item) => (
+          <article key={item.id} data-inbox-sort={item.id}>
+            <span className="sort-handle" onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); inboxDrag.current = { id: item.id, startY: event.clientY, active: false }; }} onPointerMove={(event) => { if (inboxDrag.current && Math.abs(event.clientY - inboxDrag.current.startY) > 5) inboxDrag.current.active = true; }} onPointerUp={(event) => { const drag = inboxDrag.current; const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-inbox-sort]")?.dataset.inboxSort; inboxDrag.current = null; if (drag?.active && target) reorder(drag.id, target); }}>⋮⋮</span>
+            <div className="inbox-item-main">
+              {editingId === item.id ? (
+                <textarea className="inbox-edit-area" autoFocus value={item.text} placeholder="補充素材說明……" onChange={(event) => setState((current) => ({ ...current, inbox: current.inbox.map((value) => value.id === item.id ? { ...value, text: event.target.value } : value) }))} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") setEditingId(""); }} />
+              ) : <strong>{item.text || "素材收藏"}</strong>}
+              <small>{new Date(item.createdAt).toLocaleString("zh-TW")}</small>
+              {item.attachments?.length ? <div className="inbox-attachments" aria-label={`${item.attachments.length} 個素材預覽`}>{item.attachments.map((attachment, index) => {
+                const preview = mediaSource(attachment, dataDirectory);
+                const original = mediaSource(attachment, dataDirectory, true);
+                return <div className="inbox-attachment-item" key={attachment.id} style={{ zIndex: index + 1 }}>
+                  <button type="button" className="inbox-attachment-preview" title={attachment.originalName} aria-label={`預覽素材 ${attachment.originalName}`} onClick={() => setPreviewAttachment({ attachment, preview, original })}>
+                    {attachment.mediaType === "video" ? <video muted preload="metadata" poster={preview} src={original} /> : <img src={preview} alt="" />}
+                    <span className="inbox-attachment-name">{attachment.originalName}</span>
+                  </button>
+                  <button type="button" className="inbox-attachment-remove" aria-label={`移除 ${attachment.originalName}`} title={`移除 ${attachment.originalName}`} onClick={() => removeAttachment(item.id, attachment)}>×</button>
+                </div>;
+              })}</div> : null}
             </div>
-            <div>
-              <button
-                onClick={() => setEditingId(editingId === x.id ? "" : x.id)}
-              >
-                {editingId === x.id ? "完成" : "編輯"}
-              </button>
-              <button onClick={() => convert(x.id, "todo")}>轉待辦</button>
-              <button onClick={() => convert(x.id, "diary")}>轉日記</button>
-              <button onClick={() => remove(x.id)}>刪除</button>
+            <div className="inbox-item-actions">
+              <button onClick={() => setEditingId(editingId === item.id ? "" : item.id)}>{editingId === item.id ? "完成" : "編輯"}</button>
+              <label className={`inbox-attach-more ${busyItemId === item.id ? "busy" : ""}`}>{busyItemId === item.id ? "匯入中…" : "新增影音"}<input aria-label={`新增影音到 ${item.text || "素材收藏"}`} type="file" accept="image/*,video/*" multiple disabled={Boolean(busyItemId)} onChange={(event) => { void addAttachments(item.id, Array.from(event.target.files || [])); event.target.value = ""; }} /></label>
+              <button onClick={() => convert(item.id, "todo")}>轉待辦</button>
+              <button onClick={() => convert(item.id, "snippet")}>轉碎念</button>
+              <button onClick={() => remove(item.id)}>刪除</button>
             </div>
           </article>
         ))}
       </div>
+      {previewAttachment && (
+        <Modal
+          eyebrow={previewAttachment.attachment.mediaType === "video" ? "VIDEO" : "PHOTO"}
+          title={previewAttachment.attachment.originalName}
+          onClose={() => setPreviewAttachment(null)}
+          className="inbox-media-modal"
+          footer={<button type="button" onClick={() => setPreviewAttachment(null)}>關閉預覽</button>}
+        >
+          <div className="inbox-media-stage">
+            {previewAttachment.attachment.mediaType === "video"
+              ? <video controls autoPlay preload="metadata" poster={previewAttachment.preview} src={previewAttachment.original} />
+              : <img src={previewAttachment.original || previewAttachment.preview} alt={previewAttachment.attachment.originalName} />}
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -2358,7 +2537,7 @@ function TrashPage({
       .map((x) => ({
         kind: "inbox" as const,
         id: x.id,
-        title: x.text,
+        title: x.text || x.attachments?.[0]?.originalName || "素材收藏",
         type: "收集箱",
       })),
   ];
@@ -2427,6 +2606,11 @@ function TrashPage({
       state.photos
         .filter((item) => item.albumId === id)
         .forEach((item) => void removeMediaFiles(item));
+    }
+    if (kind === "inbox") {
+      state.inbox
+        .find((item) => item.id === id)
+        ?.attachments?.forEach((attachment) => void removeMediaFiles(attachment));
     }
     setState((s) => {
       switch (kind) {
@@ -2655,7 +2839,7 @@ function SettingsPage({
               value={backupPath}
               disabled={!window.__TAURI_INTERNALS__}
               onChange={(e) => setBackupPath(e.target.value)}
-              placeholder="例如 F:\\月光簿備份"
+              placeholder="選擇備份資料夾"
             />
           </Field>
           <button
@@ -2730,7 +2914,7 @@ function SettingsPage({
             value={path}
             disabled={!window.__TAURI_INTERNALS__}
             onChange={(e) => setPath(e.target.value)}
-            placeholder="例如 D:\\月光簿資料"
+            placeholder="選擇資料夾"
           />
         </Field>
         <button
@@ -2754,7 +2938,7 @@ function SettingsPage({
       <Panel title="隱私">
         <p className="muted">
           月光簿不會自動把日記、筆記或待辦傳送到
-          外部聊天網站。只有你點擊月光精靈時，才會開啟設定的網址。
+          ChatGPT。只有你點擊月光精靈時，才會開啟設定的網址。
         </p>
       </Panel>
       <Panel title="鍵盤快捷鍵">
@@ -2788,14 +2972,19 @@ function SettingsPage({
 function QuickCapture({
   onClose,
   setState,
+  privateUnlocked,
 }: {
   onClose: () => void;
   setState: StateSetter;
+  privateUnlocked: boolean;
 }) {
   const [text, setText] = useState("");
   const [type, setType] = useState<"inbox" | "todo" | "diary">("inbox");
+  useEffect(() => {
+    if (!privateUnlocked && type === "diary") setType("inbox");
+  }, [privateUnlocked, type]);
   const save = () => {
-    if (!text.trim()) return;
+    if (!text.trim() || (type === "diary" && !privateUnlocked)) return;
     setState((s) =>
       type === "inbox"
         ? {
@@ -2885,7 +3074,7 @@ function QuickCapture({
         placeholder="碎念、靈感、網址……什麼都可以"
       />
       <div className="type-tabs">
-        {(["inbox", "todo", "diary"] as const).map((x) => (
+        {(privateUnlocked ? ["inbox", "todo", "diary"] as const : ["inbox", "todo"] as const).map((x) => (
           <button
             className={type === x ? "active" : ""}
             key={x}
@@ -2903,10 +3092,12 @@ function Search({
   state,
   onClose,
   setPage,
+  privateUnlocked,
 }: {
   state: AppState;
   onClose: () => void;
   setPage: (p: PageName) => void;
+  privateUnlocked: boolean;
 }) {
   const [q, setQ] = useState("");
   const [type, setType] = useState("全部");
@@ -2946,7 +3137,7 @@ function Search({
           status: "",
           hasImage: false,
         })),
-      ...state.diaries
+      ...(privateUnlocked ? state.diaries : [])
         .filter(
           (x) =>
             !x.deletedAt &&
@@ -2980,16 +3171,20 @@ function Search({
           ),
         })),
       ...state.inbox
-        .filter((x) => !x.deletedAt && find(x.text))
+        .filter(
+          (x) =>
+            !x.deletedAt &&
+            (find(x.text) || (x.attachments || []).some((file) => find(file.originalName))),
+        )
         .map((x) => ({
           type: "收集箱",
-          title: x.text,
+          title: x.text || x.attachments?.[0]?.originalName || "素材收藏",
           page: "inbox" as PageName,
           date: x.createdAt.slice(0, 10),
           status: "",
-          hasImage: false,
+          hasImage: Boolean(x.attachments?.length),
         })),
-      ...state.photos
+      ...(privateUnlocked ? state.photos : [])
         .filter(
           (x) =>
             !x.deletedAt &&
@@ -3012,7 +3207,7 @@ function Search({
         (status === "全部" || item.status === status) &&
         (!hasImage || item.hasImage),
     );
-  }, [from, hasImage, q, state, status, to, type]);
+  }, [from, hasImage, privateUnlocked, q, state, status, to, type]);
   const searching = Boolean(
     q.trim() || type !== "全部" || from || to || status !== "全部" || hasImage,
   );
@@ -3099,12 +3294,30 @@ function FloatingMoon({
   setState: StateSetter;
 }) {
   const s = state.settings;
+  const [viewport, setViewport] = useState(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  }));
   const [drag, setDrag] = useState<{
     dx: number;
     dy: number;
     moved: boolean;
   } | null>(null);
+  useEffect(() => {
+    const updateViewport = () =>
+      setViewport({ width: window.innerWidth, height: window.innerHeight });
+    window.addEventListener("resize", updateViewport);
+    return () => window.removeEventListener("resize", updateViewport);
+  }, []);
   if (!s.showMoon) return null;
+  const moonPosition = clampFloatingMoonPosition(
+    {
+      left: s.moonPosition.x * viewport.width,
+      top: s.moonPosition.y * viewport.height,
+    },
+    s.moonSize,
+    viewport,
+  );
   const pointerDown = (e: ReactPointerEvent<HTMLButtonElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -3112,20 +3325,20 @@ function FloatingMoon({
   };
   const pointerMove = (e: ReactPointerEvent<HTMLButtonElement>) => {
     if (!drag) return;
-    const x = Math.max(
-        8,
-        Math.min(innerWidth - s.moonSize - 8, e.clientX - drag.dx),
-      ),
-      y = Math.max(
-        5,
-        Math.min(innerHeight - s.moonSize - 20, e.clientY - drag.dy),
-      );
+    const { left: x, top: y } = clampFloatingMoonPosition(
+      { left: e.clientX - drag.dx, top: e.clientY - drag.dy },
+      s.moonSize,
+      viewport,
+    );
     setDrag({ ...drag, moved: true });
     setState((st) => ({
       ...st,
       settings: {
         ...st.settings,
-        moonPosition: { x: x / innerWidth, y: y / innerHeight },
+        moonPosition: {
+          x: x / Math.max(1, viewport.width),
+          y: y / Math.max(1, viewport.height),
+        },
       },
     }));
   };
@@ -3149,22 +3362,75 @@ function FloatingMoon({
       style={{
         width: s.moonSize,
         height: s.moonSize + 18,
-        left: Math.max(8, Math.min(innerWidth - s.moonSize - 8, s.moonPosition.x * innerWidth)),
-        top: Math.max(8, Math.min(innerHeight - s.moonSize - 20, s.moonPosition.y * innerHeight)),
+        left: moonPosition.left,
+        top: moonPosition.top,
       }}
       onPointerDown={pointerDown}
       onPointerMove={pointerMove}
       onPointerUp={pointerUp}
     >
       <i className="spirit-orb">
-        <i className="spirit-crescent"></i>
-        <i className="spirit-eye left"></i>
-        <i className="spirit-eye right"></i>
-        <i className="spirit-smile"></i>
+        <i className="spirit-crescent" />
+        <i className="spirit-eye left" />
+        <i className="spirit-eye right" />
+        <i className="spirit-smile" />
       </i>
       <span>✦</span>
       <small>月光精靈</small>
     </button>
+  );
+}
+
+function PrivateAreaGate({
+  state,
+  onUnlock,
+  onOpenVault,
+}: {
+  state: AppState;
+  onUnlock: () => void;
+  onOpenVault: () => void;
+}) {
+  const [username, setUsername] = useState(state.vault?.username || "");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => setUsername(state.vault?.username || ""), [state.vault?.username]);
+  const verify = async () => {
+    if (!state.vault || !username.trim() || !password) return;
+    setBusy(true);
+    setError("");
+    try {
+      await unlockVault(state.vault, username.trim(), password);
+      setPassword("");
+      onUnlock();
+    } catch {
+      setError("帳號或主密碼錯誤，請再試一次。");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="page vault-lock">
+      <section className="panel vault-gate private-area-gate">
+        <div className="vault-mark">☾</div>
+        <small>PRIVATE PAGES</small>
+        <h2>日記與相簿已上鎖</h2>
+        <p>使用密碼保管庫的帳號與主密碼解鎖。內容維持原本的本機儲存方式。</p>
+        {state.vault ? (
+          <>
+            <label><span>保管庫帳號</span><input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} /></label>
+            <label><span>主密碼</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void verify(); }} /></label>
+            {error && <p className="vault-error">{error}</p>}
+            <button className="primary" disabled={busy || !username.trim() || !password} onClick={() => void verify()}>{busy ? "正在確認……" : "解鎖日記與相簿"}</button>
+          </>
+        ) : (
+          <>
+            <p className="vault-warning">請先建立密碼保管庫，日記與相簿會共用那組帳密。</p>
+            <button className="primary" onClick={onOpenVault}>前往密碼保管庫</button>
+          </>
+        )}
+      </section>
+    </div>
   );
 }
 
@@ -3178,6 +3444,10 @@ export default function App() {
     changeDataDirectory,
   } = useAppState();
   const [page, setPage] = useState<PageName>("today");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [privacyUnlocked, setPrivacyUnlocked] = useState(false);
+  const [privacyVaultFingerprint, setPrivacyVaultFingerprint] = useState("");
+  const privacyIdle = useRef<number | undefined>(undefined);
   const [diaryDate, setDiaryDate] = useState(todayKey);
   const [capture, setCapture] = useState(false);
   const [search, setSearch] = useState(false);
@@ -3208,6 +3478,31 @@ export default function App() {
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
   }, [state]);
+  const currentVaultFingerprint = state.vault ? state.vault.username + "|" + state.vault.salt : "";
+  useEffect(() => {
+    if (!privacyUnlocked) return;
+    const lock = () => {
+      setPrivacyUnlocked(false);
+      setPrivacyVaultFingerprint("");
+    };
+    const reset = () => {
+      window.clearTimeout(privacyIdle.current);
+      privacyIdle.current = window.setTimeout(lock, 5 * 60 * 1000);
+    };
+    const hidden = () => { if (document.hidden) lock(); };
+    if (privacyVaultFingerprint !== currentVaultFingerprint) {
+      lock();
+      return;
+    }
+    for (const name of ["pointerdown", "keydown"] as const) window.addEventListener(name, reset);
+    document.addEventListener("visibilitychange", hidden);
+    reset();
+    return () => {
+      window.clearTimeout(privacyIdle.current);
+      for (const name of ["pointerdown", "keydown"] as const) window.removeEventListener(name, reset);
+      document.removeEventListener("visibilitychange", hidden);
+    };
+  }, [privacyUnlocked, privacyVaultFingerprint, currentVaultFingerprint]);
   const trashCount =
     state.calendarItems.filter((x) => x.deletedAt).length +
     state.recurringEvents.filter((x) => x.deletedAt).length +
@@ -3229,7 +3524,16 @@ export default function App() {
     setPage("diary");
   };
   const content =
-    page === "today" ? (
+    (page === "diary" || page === "albums") && !privacyUnlocked ? (
+      <PrivateAreaGate
+        state={state}
+        onUnlock={() => {
+          setPrivacyVaultFingerprint(currentVaultFingerprint);
+          setPrivacyUnlocked(true);
+        }}
+        onOpenVault={() => setPage("vault")}
+      />
+    ) : page === "today" ? (
       <Today
         state={state}
         setPage={setPage}
@@ -3260,7 +3564,7 @@ export default function App() {
     ) : page === "vault" ? (
       <VaultPage state={state} setState={setState} />
     ) : page === "inbox" ? (
-      <InboxPage state={state} setState={setState} />
+      <InboxPage state={state} setState={setState} dataDirectory={dataDirectory} />
     ) : page === "trash" ? (
       <TrashPageNew state={state} setState={setState} />
     ) : (
@@ -3283,6 +3587,8 @@ export default function App() {
         inboxCount={state.inbox.filter((x) => !x.deletedAt).length}
         trashCount={trashCount}
         onCapture={() => setCapture(true)}
+        open={sidebarOpen}
+        setOpen={setSidebarOpen}
       />
       <main>
         <header className="topbar">
@@ -3306,51 +3612,46 @@ export default function App() {
         {content}
       </main>
       {capture && (
-        <QuickCapture onClose={() => setCapture(false)} setState={setState} />
+        <QuickCapture onClose={() => setCapture(false)} setState={setState} privateUnlocked={privacyUnlocked} />
       )}{" "}
       {search && (
         <Search
           state={state}
           onClose={() => setSearch(false)}
           setPage={setPage}
+          privateUnlocked={privacyUnlocked}
         />
       )}
       {!state.settings.setupCompleted && (
         <Modal
           title="歡迎來到月光簿"
           eyebrow="FIRST SETUP"
-          onClose={() =>
-            setState((current) => ({
-              ...current,
-              settings: { ...current.settings, setupCompleted: true },
-            }))
-          }
+          onClose={() => setState((current) => ({
+            ...current,
+            settings: { ...current.settings, setupCompleted: true },
+          }))}
           footer={
             <>
               <button
                 className="secondary"
-                onClick={() =>
-                  setState((current) => ({
-                    ...current,
-                    settings: { ...current.settings, setupCompleted: true },
-                  }))
-                }
+                onClick={() => setState((current) => ({
+                  ...current,
+                  settings: { ...current.settings, setupCompleted: true },
+                }))}
               >
                 稍後再設定
               </button>
               <button
                 className="primary"
                 disabled={!profileName.trim()}
-                onClick={() =>
-                  setState((current) => ({
-                    ...current,
-                    settings: {
-                      ...current.settings,
-                      userName: profileName.trim(),
-                      setupCompleted: true,
-                    },
-                  }))
-                }
+                onClick={() => setState((current) => ({
+                  ...current,
+                  settings: {
+                    ...current.settings,
+                    userName: profileName.trim(),
+                    setupCompleted: true,
+                  },
+                }))}
               >
                 開始使用
               </button>

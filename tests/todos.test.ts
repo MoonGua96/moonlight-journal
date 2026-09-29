@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { normalizeState } from "../src/data/repository";
 import {
   addRuleFromDate,
@@ -8,6 +8,8 @@ import {
   getTodoCalendarEntries,
   isMultiDayTodo,
   legacyRecurringEventToTodo,
+  prepareTodoForSave,
+  promoteDueTodos,
   toggleTodoCompletion,
 } from "../src/data/todos";
 import type { RecurringEvent, Todo } from "../src/data/types";
@@ -127,9 +129,9 @@ describe("v0.8.1 todo calendar rules", () => {
     expect(oneDayChecked.status).toBe("doing");
   });
 
-  it("calendar only shows active, completed, and archived todo series", () => {
+  it("dated todos appear in the calendar while still in the todo column", () => {
     const todo = baseTodo({ startDate: "2026-09-21", endDate: "2026-09-23" });
-    expect(getTodoCalendarEntries({ ...todo, status: "todo" }, "2026-09-22")).toHaveLength(0);
+    expect(getTodoCalendarEntries({ ...todo, status: "todo" }, "2026-09-22")).toHaveLength(1);
     expect(getTodoCalendarEntries({ ...todo, status: "doing" }, "2026-09-22")).toHaveLength(1);
     expect(getTodoCalendarEntries({ ...todo, status: "done" }, "2026-09-22")).toHaveLength(1);
     expect(getTodoCalendarEntries({ ...todo, status: "done", archivedAt: "2026-09-24" }, "2026-09-22")).toHaveLength(1);
@@ -228,12 +230,155 @@ describe("v0.8.1 todo calendar rules", () => {
   });
 
   it("long-term deadline is visible without a daily completion checkbox", () => {
-    const todo = baseTodo({ kind: "progress", dueDate: "2026-09-30" });
+    const todo = baseTodo({ kind: "progress", startDate: "2026-09-25", endDate: "2026-09-30", dueDate: "2026-09-30" });
+    expect(getTodoCalendarEntries(todo, "2026-09-25")[0]).toMatchObject({
+      kind: "progress",
+      completed: false,
+      time: "",
+    });
     expect(getTodoCalendarEntries(todo, "2026-09-30")[0]).toMatchObject({
       kind: "progress",
       completed: false,
       time: "",
     });
-    expect(getTodoCalendarEntries(todo, "2026-09-29")).toHaveLength(0);
+    expect(getTodoCalendarEntries(todo, "2026-09-24")).toHaveLength(0);
+  });
+
+  it("reopening a long-term task preserves done dates and resumes from the reopened date", () => {
+    const todo = baseTodo({ kind: "progress", startDate: "2026-09-20", endDate: "2026-10-05", dueDate: "2026-10-05" });
+    const done = changeTodoStatus(todo, "done", "2026-09-24");
+    const reopened = changeTodoStatus(done, "doing", "2026-09-27");
+
+    expect(reopened.donePeriods).toEqual([{ startDate: "2026-09-24", endDate: "2026-09-26" }]);
+    expect(getTodoCalendarEntries(reopened, "2026-09-24")).toHaveLength(1);
+    expect(getTodoCalendarEntries(reopened, "2026-09-25")).toHaveLength(0);
+    expect(getTodoCalendarEntries(reopened, "2026-09-26")).toHaveLength(0);
+    expect(getTodoCalendarEntries(reopened, "2026-09-27")).toHaveLength(1);
+  });
+
+  it("promotes a dated todo on its local start date and leaves future items in todo", () => {
+    const due = baseTodo({ status: "todo", startDate: "2026-09-27", endDate: "2026-09-30" });
+    const future = baseTodo({ id: "future", status: "todo", startDate: "2026-09-29", endDate: "2026-09-30", position: 1 });
+    const promoted = promoteDueTodos([due, future], "2026-09-28");
+
+    expect(promoted[0]).toMatchObject({ status: "doing", position: 0 });
+    expect(promoted[1]).toBe(future);
+    expect(getTodoCalendarEntries(promoted[0], "2026-09-28")).toHaveLength(1);
+  });
+
+  it("a reopened long-term task displays a growing overdue marker after its deadline", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-29T12:00:00+08:00"));
+    try {
+      const todo = baseTodo({ kind: "progress", status: "doing", startDate: "2026-09-20", endDate: "2026-09-27", dueDate: "2026-09-27" });
+      expect(getTodoCalendarEntries(todo, "2026-09-28")[0]).toMatchObject({ kind: "progress", overdueDays: 1 });
+      expect(getTodoCalendarEntries(todo, "2026-09-29")[0]).toMatchObject({ overdueDays: 2 });
+      expect(getTodoCalendarEntries(todo, "2026-09-30")).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves calendar gaps and overdue marks through the final completed day", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-29T12:00:00+08:00"));
+    try {
+      const planned = baseTodo({ kind: "progress", startDate: "2026-09-01", endDate: "2026-09-30", dueDate: "2026-09-30" });
+      const done = changeTodoStatus(planned, "done", "2026-09-20");
+      expect(getTodoCalendarEntries(done, "2026-09-01")).toHaveLength(1);
+      expect(getTodoCalendarEntries(done, "2026-09-20")[0]).toMatchObject({ completed: true });
+      expect(getTodoCalendarEntries(done, "2026-09-21")).toHaveLength(0);
+      const reopened = changeTodoStatus(done, "doing", "2026-09-29");
+
+      expect(getTodoCalendarEntries(reopened, "2026-09-20")[0]).toMatchObject({ completed: true });
+      expect(getTodoCalendarEntries(reopened, "2026-09-21")).toHaveLength(0);
+      expect(getTodoCalendarEntries(reopened, "2026-09-28")).toHaveLength(0);
+      expect(getTodoCalendarEntries(reopened, "2026-09-29")[0]).toMatchObject({ completed: false });
+      expect(getTodoCalendarEntries(reopened, "2026-09-30")[0].overdueDays).toBeUndefined();
+      expect(getTodoCalendarEntries(reopened, "2026-10-01")).toHaveLength(0);
+      expect(getTodoCalendarEntries(reopened, "2026-10-02")).toHaveLength(0);
+
+      vi.setSystemTime(new Date("2026-10-02T12:00:00+08:00"));
+      expect(getTodoCalendarEntries(reopened, "2026-10-01")[0]).toMatchObject({ overdueDays: 1 });
+      expect(getTodoCalendarEntries(reopened, "2026-10-02")[0]).toMatchObject({ overdueDays: 2 });
+
+      const completedAgain = changeTodoStatus(reopened, "done", "2026-10-02");
+      expect(getTodoCalendarEntries(completedAgain, "2026-10-01")[0]).toMatchObject({ overdueDays: 1 });
+      expect(getTodoCalendarEntries(completedAgain, "2026-10-02")[0]).toMatchObject({ completed: true, overdueDays: 2 });
+      expect(getTodoCalendarEntries(completedAgain, "2026-10-03")).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("editing a done long-term task date range preserves history by default and can overwrite it", () => {
+    const done = baseTodo({
+      kind: "progress",
+      status: "done",
+      startDate: "2026-09-01",
+      endDate: "2026-09-30",
+      dueDate: "2026-09-30",
+      donePeriods: [{ startDate: "2026-09-20" }],
+      progressLogs: [{ id: "log-1", date: "2026-09-10", text: "已完成一部分", createdAt: "2026-09-10T12:00:00.000Z" }],
+    });
+    const edited = prepareTodoForSave(done, {
+      ...done,
+      startDate: "2026-09-20",
+      endDate: "2026-09-21",
+      dueDate: "2026-09-21",
+    });
+    const savedAgain = prepareTodoForSave(edited, { ...edited, title: "重新命名" });
+    const overwritten = prepareTodoForSave(done, {
+      ...done,
+      startDate: "2026-09-20",
+      endDate: "2026-09-21",
+      dueDate: "2026-09-21",
+    }, "2026-09-29", { overwriteProgressCalendarHistory: true });
+
+    expect(edited.donePeriods).toEqual(done.donePeriods);
+    expect(edited.progressLogs).toEqual(done.progressLogs);
+    expect(savedAgain.donePeriods).toEqual(done.donePeriods);
+    expect(getTodoCalendarEntries(edited, "2026-09-19")).toHaveLength(0);
+    expect(getTodoCalendarEntries(edited, "2026-09-20")).toHaveLength(1);
+    expect(getTodoCalendarEntries(edited, "2026-09-21")).toHaveLength(0);
+    expect(getTodoCalendarEntries(edited, "2026-09-22")).toHaveLength(0);
+    expect(overwritten.donePeriods).toEqual([]);
+    expect(overwritten.progressLogs).toEqual(done.progressLogs);
+    expect(getTodoCalendarEntries(overwritten, "2026-09-20")).toHaveLength(1);
+    expect(getTodoCalendarEntries(overwritten, "2026-09-21")).toHaveLength(1);
+  });
+
+  it("editing dates while doing preserves prior done gaps and clips entries to the new range", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-29T12:00:00+08:00"));
+    try {
+    const todo = baseTodo({ kind: "progress", startDate: "2026-09-01", endDate: "2026-09-30", dueDate: "2026-09-30" });
+    const done = changeTodoStatus(todo, "done", "2026-09-20");
+    const reopened = changeTodoStatus(done, "doing", "2026-09-29");
+    const startEdited = prepareTodoForSave(reopened, {
+      ...reopened,
+      startDate: "2026-09-22",
+    });
+    const edited = prepareTodoForSave(startEdited, {
+      ...startEdited,
+      endDate: "2026-10-03",
+      dueDate: "2026-10-03",
+    });
+
+    expect(edited.donePeriods).toEqual(reopened.donePeriods);
+    expect(getTodoCalendarEntries(startEdited, "2026-09-01")).toHaveLength(0);
+    expect(getTodoCalendarEntries(startEdited, "2026-09-30")).toHaveLength(1);
+    expect(getTodoCalendarEntries(startEdited, "2026-10-01")).toHaveLength(0);
+    expect(getTodoCalendarEntries(edited, "2026-09-21")).toHaveLength(0);
+    expect(getTodoCalendarEntries(edited, "2026-09-22")).toHaveLength(0);
+    expect(getTodoCalendarEntries(edited, "2026-09-28")).toHaveLength(0);
+    expect(getTodoCalendarEntries(edited, "2026-09-29")).toHaveLength(1);
+    expect(getTodoCalendarEntries(edited, "2026-10-03")).toHaveLength(1);
+    expect(getTodoCalendarEntries(edited, "2026-10-04")).toHaveLength(0);
+    vi.setSystemTime(new Date("2026-10-04T12:00:00+08:00"));
+    expect(getTodoCalendarEntries(edited, "2026-10-04")[0]).toMatchObject({ overdueDays: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -6,6 +6,8 @@ src-tauri/target/
 *.db-wal
 *.db-shm
 media/
+!public/media/
+!public/media/**
 backups/
 *.backup
 

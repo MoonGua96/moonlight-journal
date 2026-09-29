@@ -4,17 +4,14 @@ use serde::Serialize;
 use std::{
     fs,
     path::{Component, Path, PathBuf},
-    sync::Mutex,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tauri_plugin_opener::OpenerExt;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager,
 };
-
-struct PetPressState(Mutex<Option<Instant>>);
+use tauri_plugin_opener::OpenerExt;
 
 fn open_database(data_dir: &str) -> Result<Connection, String> {
     let dir = PathBuf::from(data_dir);
@@ -34,6 +31,18 @@ fn open_database(data_dir: &str) -> Result<Connection, String> {
     Ok(db)
 }
 
+#[cfg(target_os = "windows")]
+fn find_legacy_data_directory() -> Option<PathBuf> {
+    for drive in (b'C'..=b'Z').rev() {
+        let root = format!("{}:\\", char::from(drive));
+        let candidate = PathBuf::from(root).join("月光簿資料");
+        if candidate.join("moonlight.db").is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 #[tauri::command]
 fn default_data_directory(app: tauri::AppHandle) -> Result<String, String> {
     let current = app
@@ -42,6 +51,10 @@ fn default_data_directory(app: tauri::AppHandle) -> Result<String, String> {
         .map_err(|error| error.to_string())?;
     if current.join("moonlight.db").exists() {
         return Ok(current.to_string_lossy().into_owned());
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(legacy) = find_legacy_data_directory() {
+        return Ok(legacy.to_string_lossy().into_owned());
     }
     Ok(current.to_string_lossy().into_owned())
 }
@@ -322,9 +335,7 @@ fn restore_full_backup(data_dir: String, backup_dir: String) -> Result<String, S
 
 #[tauri::command]
 fn set_pet_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
-    let pet = app
-        .get_webview_window("pet")
-        .ok_or("找不到桌面月光精靈視窗")?;
+    let pet = app.get_webview_window("pet").ok_or("找不到桌面月光精靈視窗")?;
     if visible {
         pet.show().map_err(|error| error.to_string())?;
     } else {
@@ -350,25 +361,7 @@ fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn start_pet_drag(
     app: tauri::AppHandle,
-    press_state: tauri::State<PetPressState>,
 ) -> Result<(), String> {
-    let now = Instant::now();
-    let mut last_press = press_state
-        .0
-        .lock()
-        .map_err(|_| "無法讀取桌面月光精靈點擊狀態".to_string())?;
-    let is_double_click = last_press
-        .map(|previous| now.duration_since(previous) <= Duration::from_millis(500))
-        .unwrap_or(false);
-
-    if is_double_click {
-        *last_press = None;
-        drop(last_press);
-        return reveal_main_window(&app);
-    }
-    *last_press = Some(now);
-    drop(last_press);
-
     let pet = app
         .get_webview_window("pet")
         .ok_or("找不到桌面月光精靈視窗")?;
@@ -391,7 +384,6 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let _ = reveal_main_window(app);
         }))
-        .manage(PetPressState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             default_data_directory,
             load_state,

@@ -94,8 +94,8 @@ export default function CalendarDataModal({
     id: makeId("birthday"),
     name: "",
     calendar: "solar",
-    month: 1,
-    day: 1,
+    month: 0,
+    day: 0,
   });
   const [holiday, setHoliday] = useState<Holiday>({
     id: makeId("holiday"),
@@ -225,31 +225,34 @@ export default function CalendarDataModal({
                   <span>月</span>
                   <input
                     aria-label="生日月"
-                    type="number"
-                    min="1"
-                    max="12"
-                    value={birthday.month}
-                    onChange={(e) =>
-                      setBirthday({
-                        ...birthday,
-                        month: Number(e.target.value),
-                      })
-                    }
+                    type="text"
+                    inputMode="numeric"
+                    value={birthday.month || ""}
+                    onChange={(e) => {
+                      const value = e.target.value.replace(/\D/g, "");
+                      setBirthday({ ...birthday, month: value ? Number(value) : 0 });
+                    }}
                   />
                 </label>
                 <label>
                   <span>日</span>
                   <input
                     aria-label="生日日"
-                    type="number"
-                    min="1"
-                    max={maxBirthdayDay}
-                    value={birthday.day}
-                    onChange={(e) =>
-                      setBirthday({ ...birthday, day: Number(e.target.value) })
-                    }
+                    type="text"
+                    inputMode="numeric"
+                    value={birthday.day || ""}
+                    onChange={(e) => {
+                      const value = e.target.value.replace(/\D/g, "");
+                      setBirthday({ ...birthday, day: value ? Number(value) : 0 });
+                    }}
                   />
                 </label>
+                {birthday.month !== 0 && (birthday.month < 1 || birthday.month > 12) && (
+                  <small className="calendar-data-error">月份請輸入 1–12。</small>
+                )}
+                {birthday.day !== 0 && (birthday.day < 1 || birthday.day > maxBirthdayDay) && (
+                  <small className="calendar-data-error">日期超出這個月份的範圍。</small>
+                )}
                 <label>
                   <span>出生年（選填）</span>
                   <input
@@ -328,8 +331,8 @@ export default function CalendarDataModal({
                       id: makeId("birthday"),
                       name: "",
                       calendar: "solar",
-                      month: 1,
-                      day: 1,
+                      month: 0,
+                      day: 0,
                     });
                   }}
                 >

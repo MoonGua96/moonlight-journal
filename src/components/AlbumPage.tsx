@@ -465,7 +465,7 @@ export default function AlbumPage({
               <div className="album-empty">
                 <b>☾</b>
                 <h3>這本相簿正在等第一道光</h3>
-                <p>把珍貴的照片或影片放進來吧。</p>
+                <p>把值得收藏的照片或影片放進來吧。</p>
               </div>
             )}
           </>
@@ -543,7 +543,7 @@ export default function AlbumPage({
             <button
               className="secondary"
               disabled={!editing.originalPath}
-              title={editing.originalPath ? "在檔案總管中選取原始檔" : "瀏覽器預覽沒有本機檔案位置"}
+              title={editing.originalPath ? "在檔案管理員中顯示原始檔" : "瀏覽器預覽沒有本機檔案位置"}
               onClick={() => {
                 if (!editing.originalPath) {
                   setImportMessage("瀏覽器預覽沒有可開啟的本機檔案位置。桌面版可直接開啟。");
