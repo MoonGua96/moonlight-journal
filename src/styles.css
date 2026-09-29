@@ -5225,3 +5225,75 @@ html.pet-root #root {
 .calendar-week-time-axis .calendar-timeline-hour > time {
   padding-right: 4px;
 }
+
+
+/* v0.9.1 月光精靈：與 App 及桌面寵物共用的新 DOM 結構 */
+.floating-moon .spirit-orb,
+.pet-character .spirit-orb {
+  position: absolute;
+  display: block;
+  overflow: visible;
+  border: 1px solid rgba(104, 82, 137, 0.42);
+  border-radius: 48% 48% 46% 46%;
+  background:
+    radial-gradient(ellipse at 34% 23%, #fff 0 8%, #f7f1ff 28%, #ded2f0 67%, #c5b3df 100%);
+  box-shadow:
+    inset -7px -9px 16px rgba(91, 66, 121, 0.16),
+    inset 4px 4px 12px rgba(255, 255, 255, 0.88),
+    0 7px 18px rgba(54, 39, 72, 0.22);
+  pointer-events: none;
+}
+.floating-moon .spirit-orb {
+  inset: 7% 13% 21%;
+}
+.pet-character .spirit-orb {
+  left: 24%;
+  right: 24%;
+  top: 12%;
+  bottom: 20%;
+}
+.spirit-orb .spirit-crescent {
+  position: absolute;
+  display: block;
+  top: 7%;
+  right: 8%;
+  width: 30%;
+  height: 30%;
+  color: #c49a47;
+  font-style: normal;
+}
+.spirit-orb .spirit-crescent::before {
+  content: "☾";
+  position: absolute;
+  inset: 0;
+  font-family: serif;
+  font-size: clamp(12px, 34%, 28px);
+  line-height: 1;
+  text-shadow: 0 1px 2px rgba(111, 77, 30, 0.24);
+}
+.spirit-orb .spirit-eye {
+  position: absolute;
+  top: 55%;
+  width: 7%;
+  height: 9%;
+  min-width: 3px;
+  min-height: 4px;
+  border-radius: 50%;
+  background: #566d64;
+  box-shadow: 0 0 0 1px rgba(43, 57, 51, 0.18);
+}
+.spirit-orb .spirit-eye.left {
+  left: 31%;
+}
+.spirit-orb .spirit-eye.right {
+  right: 31%;
+}
+.spirit-orb .spirit-smile {
+  position: absolute;
+  left: 43%;
+  bottom: 24%;
+  width: 14%;
+  height: 8%;
+  border-bottom: 1.5px solid #a35e64;
+  border-radius: 0 0 50% 50%;
+}
