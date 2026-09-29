@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 env:
-  RELEASE_VERSION: 0.9.1
+  RELEASE_VERSION: 0.9.2
 
 permissions:
   contents: write

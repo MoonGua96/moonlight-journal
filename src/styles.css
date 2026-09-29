@@ -5227,7 +5227,7 @@ html.pet-root #root {
 }
 
 
-/* v0.9.1 月光精靈：與 App 及桌面寵物共用的新 DOM 結構 */
+/* v0.9.2 月光精靈：與 App 及桌面寵物共用的新 DOM 結構 */
 .floating-moon .spirit-orb,
 .pet-character .spirit-orb {
   position: absolute;
