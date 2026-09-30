@@ -20,7 +20,10 @@ import {
   saveState,
   storeMedia,
   setDesktopPetVisible,
+  resolvePetAppearance,
+  storePetAppearance,
 } from "./data/repository";
+import { inspectPetAppearanceFile } from "./data/petAppearance";
 import { prepareMedia } from "./data/media";
 import { birthdayOnDate, dateKey, lunarInfo } from "./data/calendar";
 import {
@@ -54,6 +57,7 @@ import {
 } from "./data/todos";
 import { useAppState } from "./data/useAppState";
 import { clampFloatingMoonPosition } from "./data/floatingMoon";
+import SpritePetApp from "./SpritePetApp";
 import { nearestPaletteId, palette, paletteItem, paletteStyle, type PaletteId } from "./data/colors";
 import NoteCanvas from "./components/NoteCanvas";
 import AlbumPage from "./components/AlbumPage";
@@ -2665,11 +2669,13 @@ function SettingsPage({
   setState,
   dataDirectory,
   changeDataDirectory,
+  isUat,
 }: {
   state: AppState;
   setState: StateSetter;
   dataDirectory: string;
   changeDataDirectory: (path: string) => Promise<void>;
+  isUat: boolean;
 }) {
   const settings = state.settings;
   const [path, setPath] = useState(dataDirectory);
@@ -2677,6 +2683,74 @@ function SettingsPage({
   const [backupPath, setBackupPath] = useState(settings.backupDirectory);
   const [restorePath, setRestorePath] = useState("");
   const [backupMessage, setBackupMessage] = useState("");
+  const [petAppearanceUrl, setPetAppearanceUrl] = useState("");
+  const [petAppearanceMessage, setPetAppearanceMessage] = useState("");
+  const [petAppearanceBusy, setPetAppearanceBusy] = useState(false);
+  const petAppearanceInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!settings.petAppearancePath) {
+      setPetAppearanceUrl("");
+      return;
+    }
+    let active = true;
+    void resolvePetAppearance(settings.petAppearancePath)
+      .then((url) => {
+        if (active) setPetAppearanceUrl(url);
+      })
+      .catch((error) => {
+        if (active) {
+          setPetAppearanceUrl("");
+          setPetAppearanceMessage(
+            `找不到已匯入的寵物圖片，將顯示內建預設外觀。${String(error)}`,
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [settings.petAppearancePath]);
+
+  const importPetAppearance = async (file?: File) => {
+    if (!file) return;
+    setPetAppearanceMessage("");
+    setPetAppearanceBusy(true);
+    try {
+      const fileError = await inspectPetAppearanceFile(file);
+      if (fileError) {
+        setPetAppearanceMessage(fileError);
+        return;
+      }
+      if (!window.__TAURI_INTERNALS__) {
+        setPetAppearanceMessage("請在 Windows 桌面版匯入，圖片才會保存到本機資料夾並在重開後保留。");
+        return;
+      }
+      const relativePath = await storePetAppearance(file);
+      const previewUrl = await resolvePetAppearance(relativePath);
+      if (!previewUrl) throw new Error("無法預覽已匯入圖片，請重新選擇檔案。");
+      setState((current) => ({
+        ...current,
+        settings: { ...current.settings, petAppearancePath: relativePath },
+      }));
+      setPetAppearanceUrl(previewUrl);
+      setPetAppearanceMessage("匯入完成；App 內與桌面寵物已共用這張靜態圖片。原始檔可移動或刪除。 ");
+    } catch (error) {
+      setPetAppearanceMessage(
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      setPetAppearanceBusy(false);
+    }
+  };
+
+  const restoreDefaultPetAppearance = () => {
+    setState((current) => ({
+      ...current,
+      settings: { ...current.settings, petAppearancePath: "" },
+    }));
+    setPetAppearanceUrl("");
+    setPetAppearanceMessage(`已還原${isUat ? " Q 版月娘" : "月光精靈"}內建預設外觀。`);
+  };
   const importBackup = async (file?: File) => {
     if (!file) return;
     try {
@@ -2808,6 +2882,55 @@ function SettingsPage({
           可貼上外部聊天對話網址；月光精靈只有在你點擊時才會開啟此網址。
         </p>
       </Panel>
+      <Panel title="寵物外觀自訂">
+        <p className="setting-hint">
+          同一張自訂圖片會用於 App 內寵物與 Windows 桌面寵物。未自訂時，{isUat ? "私人 UAT 使用 Q 版月娘" : "共用版使用月光精靈"}。
+        </p>
+        <div className="pet-appearance-preview" aria-live="polite">
+          {petAppearanceUrl ? (
+            <img src={petAppearanceUrl} alt="目前自訂的寵物外觀預覽" />
+          ) : (
+            <div className="pet-appearance-default">
+              <span>內建預設</span>
+              <strong>{isUat ? "Q 版月娘" : "月光精靈"}</strong>
+            </div>
+          )}
+        </div>
+        <div className="pet-appearance-actions">
+          <label className="secondary pet-appearance-select">
+            {petAppearanceBusy ? "正在匯入…" : "選擇圖片"}
+            <input
+              ref={petAppearanceInput}
+              hidden
+              type="file"
+              accept="image/png,image/jpeg,.png,.jpg,.jpeg"
+              disabled={petAppearanceBusy}
+              onChange={(event) => {
+                void importPetAppearance(event.currentTarget.files?.[0]);
+                event.currentTarget.value = "";
+              }}
+            />
+          </label>
+          <button
+            className="secondary"
+            type="button"
+            disabled={!settings.petAppearancePath || petAppearanceBusy}
+            onClick={restoreDefaultPetAppearance}
+          >
+            還原預設外觀
+          </button>
+        </div>
+        <ul className="pet-appearance-help">
+          <li>支援靜態 PNG、JPG、JPEG；建議使用透明背景 PNG。</li>
+          <li>檔案上限 10 MB；寬與高各須為 128–4096 px，不限制長寬比例。</li>
+          <li>圖片會完整保留比例顯示，不會拉伸或裁切；自訂圖以靜態方式顯示，不提供動畫、影格或 FPS 設定。</li>
+          <li>不支援 GIF、APNG、SVG、動畫圖片、精靈圖集或影片。</li>
+          <li>匯入後會複製到目前月光簿的本機資料目錄並保存相對路徑；移動原始檔仍可使用。</li>
+        </ul>
+        {petAppearanceMessage && (
+          <p className="pet-appearance-message" role="status">{petAppearanceMessage}</p>
+        )}
+      </Panel>
       <Panel title="資料與備份">
         <p className="muted">
           正式桌面版會把記錄保存到 SQLite，照片與影片原檔會依相簿放在同一資料位置的
@@ -2912,15 +3035,15 @@ function SettingsPage({
         <Field label="資料位置">
           <input
             value={path}
-            disabled={!window.__TAURI_INTERNALS__}
+            disabled={!window.__TAURI_INTERNALS__ || isUat}
             onChange={(e) => setPath(e.target.value)}
-            placeholder="選擇資料夾"
+            placeholder={isUat ? "本機 UAT 專用資料夾" : "選擇資料夾"}
           />
         </Field>
         <button
           className="secondary"
           disabled={
-            !window.__TAURI_INTERNALS__ || path.trim() === dataDirectory
+            !window.__TAURI_INTERNALS__ || isUat || path.trim() === dataDirectory
           }
           onClick={async () => {
             try {
@@ -2933,7 +3056,13 @@ function SettingsPage({
         >
           套用並複製目前資料
         </button>
-        {pathMessage && <p className="path-message">{pathMessage}</p>}
+        {isUat ? (
+          <p className="setting-hint">
+            UAT 測試資料固定保存在本機 D 槽，不會使用正式資料庫路徑。
+          </p>
+        ) : (
+          pathMessage && <p className="path-message">{pathMessage}</p>
+        )}
       </Panel>
       <Panel title="隱私">
         <p className="muted">
@@ -3286,14 +3415,23 @@ function Search({
   );
 }
 
+type FloatingPetAppearance = "shared-spirit" | "local-pet";
+type LocalUatPetAssets = { rootDir: string; manifestJson: string };
+
 function FloatingMoon({
   state,
   setState,
+  isUat,
 }: {
   state: AppState;
   setState: StateSetter;
+  isUat: boolean;
 }) {
   const s = state.settings;
+  const appearance: FloatingPetAppearance = isUat ? "local-pet" : "shared-spirit";
+  const [localPetAssets, setLocalPetAssets] = useState<LocalUatPetAssets | null>(null);
+  const [customPetImageUrl, setCustomPetImageUrl] = useState("");
+  const [interactionTrigger, setInteractionTrigger] = useState(0);
   const [viewport, setViewport] = useState(() => ({
     width: window.innerWidth,
     height: window.innerHeight,
@@ -3303,6 +3441,40 @@ function FloatingMoon({
     dy: number;
     moved: boolean;
   } | null>(null);
+  useEffect(() => {
+    if (appearance !== "local-pet" || !window.__TAURI_INTERNALS__) {
+      setLocalPetAssets(null);
+      return;
+    }
+    let active = true;
+    void import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke<LocalUatPetAssets>("load_local_uat_pet_assets"))
+      .then((assets) => {
+        if (active) setLocalPetAssets(assets);
+      })
+      .catch((error) => console.error("[UAT 寵物] 動畫素材載入失敗", error));
+    return () => {
+      active = false;
+    };
+  }, [appearance]);
+  useEffect(() => {
+    if (!s.petAppearancePath) {
+      setCustomPetImageUrl("");
+      return;
+    }
+    let active = true;
+    void resolvePetAppearance(s.petAppearancePath)
+      .then((url) => {
+        if (active) setCustomPetImageUrl(url);
+      })
+      .catch((error) => {
+        console.error("[寵物外觀] 自訂圖片載入失敗，改用內建預設", error);
+        if (active) setCustomPetImageUrl("");
+      });
+    return () => {
+      active = false;
+    };
+  }, [s.petAppearancePath]);
   useEffect(() => {
     const updateViewport = () =>
       setViewport({ width: window.innerWidth, height: window.innerHeight });
@@ -3344,6 +3516,7 @@ function FloatingMoon({
   };
   const pointerUp = async () => {
     if (drag && !drag.moved) {
+      setInteractionTrigger((trigger) => trigger + 1);
       try {
         if (window.__TAURI_INTERNALS__) {
           const { openUrl } = await import("@tauri-apps/plugin-opener");
@@ -3357,8 +3530,8 @@ function FloatingMoon({
   };
   return (
     <button
-      aria-label="找月光精靈聊聊"
-      className="floating-moon"
+      aria-label={appearance === "local-pet" ? "找寵物聊聊" : "找月光精靈聊聊"}
+      className={`floating-moon${localPetAssets && !customPetImageUrl ? " uat-moon-lady" : ""}${customPetImageUrl ? " has-custom-pet" : ""}`}
       style={{
         width: s.moonSize,
         height: s.moonSize + 18,
@@ -3369,14 +3542,27 @@ function FloatingMoon({
       onPointerMove={pointerMove}
       onPointerUp={pointerUp}
     >
-      <i className="spirit-orb">
-        <i className="spirit-crescent" />
-        <i className="spirit-eye left" />
-        <i className="spirit-eye right" />
-        <i className="spirit-smile" />
-      </i>
-      <span>✦</span>
-      <small>月光精靈</small>
+      {customPetImageUrl ? (
+        <img className="custom-pet-image" src={customPetImageUrl} alt="自訂寵物外觀" />
+      ) : localPetAssets ? (
+        <SpritePetApp
+          rootDir={localPetAssets.rootDir}
+          manifestJson={localPetAssets.manifestJson}
+          mode="inline"
+          interactionTrigger={interactionTrigger}
+        />
+      ) : (
+        <>
+          <i className="spirit-orb">
+            <i className="spirit-crescent" />
+            <i className="spirit-eye left" />
+            <i className="spirit-eye right" />
+            <i className="spirit-smile" />
+          </i>
+          <span>✦</span>
+        </>
+      )}
+      <small>{localPetAssets ? "月娘" : "月光精靈"}</small>
     </button>
   );
 }
@@ -3441,6 +3627,7 @@ export default function App() {
     ready,
     saveStatus,
     dataDirectory,
+    isUat,
     changeDataDirectory,
   } = useAppState();
   const [page, setPage] = useState<PageName>("today");
@@ -3573,6 +3760,7 @@ export default function App() {
         setState={setState}
         dataDirectory={dataDirectory}
         changeDataDirectory={changeDataDirectory}
+        isUat={isUat}
       />
     );
   return (
@@ -3671,7 +3859,7 @@ export default function App() {
         </Modal>
       )}
       </div>
-      <FloatingMoon state={state} setState={setState} />
+      <FloatingMoon state={state} setState={setState} isUat={isUat} />
     </>
   );
 }

@@ -1,6 +1,7 @@
 node_modules/
 dist/
 src-tauri/target/
+src-tauri/gen/
 
 *.db
 *.db-wal
@@ -23,6 +24,9 @@ config.local.*
 personal/
 private/
 *.local.json
+
+# Local UAT configuration, data, and test assets (never commit)
+.uat-local/
 
 .DS_Store
 Thumbs.db

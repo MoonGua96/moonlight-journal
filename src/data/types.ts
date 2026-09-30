@@ -333,6 +333,8 @@ export interface AppSettings {
   moonPosition: { x: number; y: number };
   theme: "light" | "dark";
   showDesktopPet: boolean;
+  /** Relative to the selected local data directory. Empty means use the bundled default pet. */
+  petAppearancePath: string;
   backupDirectory: string;
   /** 1 = default; larger values improve readability without changing stored content. */
   fontScale: number;
@@ -385,6 +387,7 @@ export const initialState: AppState = {
     moonPosition: { x: 0.88, y: 0.78 },
     theme: "light",
     showDesktopPet: true,
+    petAppearancePath: "",
     backupDirectory: "",
     fontScale: 1,
   },

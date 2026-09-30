@@ -7,6 +7,16 @@ import { legacyRecurringEventToTodo } from "./todos";
 const STORAGE_KEY = "moonlight-journal.v0.2.state";
 const DATA_DIR_KEY = "moonlight-journal.data-directory";
 let activeDataDirectory = "";
+let localUatPromise: Promise<boolean> | null = null;
+
+export async function isLocalUat() {
+  if (!window.__TAURI_INTERNALS__) return false;
+  if (!localUatPromise) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    localUatPromise = invoke<boolean>("is_local_uat").catch(() => false);
+  }
+  return localUatPromise;
+}
 
 const cloneInitial = (): AppState => structuredClone(initialState);
 
@@ -200,6 +210,10 @@ export const normalizeState = (value: Partial<AppState>): AppState => {
     settings: {
       ...base.settings,
       ...(value.settings || {}),
+      petAppearancePath:
+        typeof value.settings?.petAppearancePath === "string"
+          ? value.settings.petAppearancePath
+          : "",
       fontScale: Math.min(
         1.4,
         Math.max(1, Number(value.settings?.fontScale ?? base.settings.fontScale) || 1),
@@ -210,6 +224,12 @@ export const normalizeState = (value: Partial<AppState>): AppState => {
 async function dataDirectory() {
   if (!window.__TAURI_INTERNALS__) return "瀏覽器預覽資料";
   if (activeDataDirectory) return activeDataDirectory;
+  if (await isLocalUat()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    activeDataDirectory = await invoke<string>("default_data_directory");
+    localStorage.setItem(DATA_DIR_KEY, activeDataDirectory);
+    return activeDataDirectory;
+  }
   const saved = localStorage.getItem(DATA_DIR_KEY);
   if (saved) {
     activeDataDirectory = saved;
@@ -231,7 +251,30 @@ export async function loadState(): Promise<AppState> {
       const value = await invoke<string | null>("load_state", {
         dataDir: await dataDirectory(),
       });
-      return value ? normalizeState(JSON.parse(value)) : cloneInitial();
+      if (value) return normalizeState(JSON.parse(value));
+      const initial = cloneInitial();
+      if (await isLocalUat()) {
+        const profileJson = await invoke<string>("load_local_uat_profile");
+        const profile = JSON.parse(profileJson) as {
+          userName?: unknown;
+          showDesktopPet?: unknown;
+        };
+        const userName =
+          typeof profile.userName === "string" ? profile.userName : "";
+        return normalizeState({
+          ...initial,
+          settings: {
+            ...initial.settings,
+            userName,
+            setupCompleted: Boolean(userName.trim()),
+            showDesktopPet:
+              typeof profile.showDesktopPet === "boolean"
+                ? profile.showDesktopPet
+                : initial.settings.showDesktopPet,
+          },
+        });
+      }
+      return initial;
     }
     const value = localStorage.getItem(STORAGE_KEY);
     return value ? normalizeState(JSON.parse(value)) : cloneInitial();
@@ -255,6 +298,9 @@ export async function saveState(state: AppState): Promise<void> {
 }
 
 export async function moveDataDirectory(path: string, state: AppState) {
+  if (await isLocalUat()) {
+    throw new Error("UAT 測試資料固定儲存在本機專用資料夾");
+  }
   const clean = path.trim();
   if (!clean) throw new Error("資料夾不可空白");
   if (window.__TAURI_INTERNALS__) {
@@ -290,6 +336,28 @@ export async function storeMedia(
     originalBase64: await fileToBase64(file),
     previewBase64: previewDataUrl.split(",", 2)[1] || "",
   });
+}
+
+export async function storePetAppearance(file: File): Promise<string> {
+  if (!window.__TAURI_INTERNALS__) {
+    throw new Error("請在 Windows 桌面版匯入圖片，才能保存到本機資料夾。");
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string>("store_pet_appearance", {
+    dataDir: await dataDirectory(),
+    originalName: file.name,
+    imageBase64: await fileToBase64(file),
+  });
+}
+
+export async function resolvePetAppearance(relativePath: string): Promise<string> {
+  if (!window.__TAURI_INTERNALS__) return "";
+  const { invoke } = await import("@tauri-apps/api/core");
+  const absolutePath = await invoke<string>("resolve_pet_appearance", {
+    dataDir: await dataDirectory(),
+    relativePath,
+  });
+  return convertFileSrc(absolutePath);
 }
 
 export async function ensureAlbumMediaDirectory(folder: string) {

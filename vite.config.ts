@@ -7,7 +7,7 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
-    watch: { ignored: ["**/src-tauri/target/**"] },
+    watch: { ignored: ["**/src-tauri/target/**", "**/.uat-local/**"] },
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: { target: ["es2021", "chrome105", "safari13"] },

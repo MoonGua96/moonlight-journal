@@ -1505,6 +1505,64 @@ button:disabled {
   grid-template-columns: 1fr 1fr;
   gap: 16px;
 }
+.pet-appearance-preview {
+  min-height: 152px;
+  margin: 12px 0 10px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f8f5fb;
+}
+.pet-appearance-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 210px;
+  object-fit: contain;
+}
+.pet-appearance-default {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  padding: 24px;
+  color: var(--purple);
+}
+.pet-appearance-default span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.pet-appearance-default strong {
+  font-size: 17px;
+}
+.pet-appearance-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.pet-appearance-select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.pet-appearance-select:has(input:disabled) {
+  opacity: 0.65;
+  cursor: wait;
+}
+.pet-appearance-help {
+  margin: 12px 0 0;
+  padding-left: 20px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.75;
+}
+.pet-appearance-message {
+  margin: 10px 0 0;
+  color: var(--purple);
+  font-size: 11px;
+  line-height: 1.6;
+}
 .muted {
   color: var(--muted);
   font-size: 10px;
@@ -1775,6 +1833,12 @@ button:disabled {
   object-position: center bottom;
   pointer-events: none;
   -webkit-user-drag: none;
+}
+.floating-moon.has-custom-pet > .custom-pet-image,
+.pet-character.pet-custom-image > img {
+  animation: pet-custom-image-idle 6.4s ease-in-out infinite;
+  transform-origin: 50% 78%;
+  will-change: transform;
 }
 .floating-moon .hair {
   position: absolute;
@@ -2935,6 +2999,20 @@ html.pet-root #root {
   image-rendering: auto;
   will-change: contents;
 }
+.pet-character.pet-custom-image > img {
+  position: absolute;
+  z-index: 2;
+  top: 4px;
+  left: 6%;
+  display: block;
+  width: 88%;
+  height: calc(100% - 34px);
+  max-width: none;
+  object-fit: contain;
+  object-position: center;
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
 .pet-character.pet-motion-sprite > .pet-sprite {
   animation:
     pet-sprite-cycle-48 60s steps(1, end) infinite,
@@ -3266,6 +3344,12 @@ html.pet-root #root {
   25% { transform: translateX(calc(-50% - 2px)) translateY(-1px) rotate(-0.55deg); }
   50% { transform: translateX(calc(-50% + 2px)) translateY(0) rotate(0.55deg); }
   75% { transform: translateX(calc(-50% + 1px)) translateY(-1px) rotate(0.25deg); }
+}
+@keyframes pet-custom-image-idle {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(-0.3deg); }
+  25% { transform: translate3d(2px, -2px, 0) rotate(0.45deg); }
+  50% { transform: translate3d(0, -4px, 0) rotate(-0.35deg); }
+  75% { transform: translate3d(-2px, -2px, 0) rotate(0.25deg); }
 }
 @keyframes pet-sprite-cycle-96 {
   0% { background-position: 0px 0px; }
@@ -4612,6 +4696,8 @@ html.pet-root #root {
 .app.dark .sidebar { box-shadow: 12px 0 32px rgba(0, 0, 0, 0.35); }
 @media (prefers-reduced-motion: reduce) {
   .sidebar { transition-duration: 0.01ms; }
+  .floating-moon.has-custom-pet > .custom-pet-image,
+  .pet-character.pet-custom-image > img { animation: none; }
 }
 
 .calendar-workspace {
@@ -5248,9 +5334,13 @@ html.pet-root #root {
 }
 .pet-character .spirit-orb {
   left: 24%;
-  right: 24%;
-  top: 12%;
-  bottom: 20%;
+  right: auto;
+  top: 46%;
+  bottom: auto;
+  width: 52%;
+  height: auto;
+  aspect-ratio: 0.85;
+  transform: translateY(-50%);
 }
 .spirit-orb .spirit-crescent {
   position: absolute;
@@ -5296,4 +5386,16 @@ html.pet-root #root {
   height: 8%;
   border-bottom: 1.5px solid #a35e64;
   border-radius: 0 0 50% 50%;
+}
+
+.floating-moon.uat-moon-lady > .pet-canvas {
+  position: absolute;
+  inset: 0 0 18px;
+  display: block;
+  width: 100%;
+  height: calc(100% - 18px);
+  max-width: 100%;
+  max-height: 100%;
+  background: transparent;
+  pointer-events: none;
 }

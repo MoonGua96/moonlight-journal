@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   getDataDirectory,
+  isLocalUat,
   loadState,
   moveDataDirectory,
   saveState,
@@ -18,14 +19,18 @@ export function useAppState() {
     "saved",
   );
   const [dataDirectory, setDataDirectory] = useState("");
+  const [isUat, setIsUat] = useState(false);
   const timer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
-    Promise.all([loadState(), getDataDirectory()]).then(([value, path]) => {
-      setState(value);
-      setDataDirectory(path);
-      setReady(true);
-    });
+    Promise.all([loadState(), getDataDirectory(), isLocalUat()]).then(
+      ([value, path, localUat]) => {
+        setState(value);
+        setDataDirectory(path);
+        setIsUat(localUat);
+        setReady(true);
+      },
+    );
   }, []);
 
   useEffect(() => {
@@ -68,6 +73,7 @@ export function useAppState() {
     ready,
     saveStatus,
     dataDirectory,
+    isUat,
     changeDataDirectory,
   };
 }
