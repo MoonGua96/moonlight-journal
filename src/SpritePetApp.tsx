@@ -276,7 +276,7 @@ export default function SpritePetApp({
       const scale = Math.min(canvasWidth / FRAME_CONTENT_WIDTH, canvasHeight / CELL_HEIGHT);
       const drawWidth = FRAME_CONTENT_WIDTH * scale;
       const drawHeight = CELL_HEIGHT * scale;
-      const breathing = animation === "idle" || animation === "rest" || animation === "sleep_loop";
+      const breathing = mode === "desktop" && (animation === "idle" || animation === "rest" || animation === "sleep_loop");
       const breathPhase = wallElapsed * (Math.PI * 2 / 4.8);
       const offsetX = breathing ? Math.sin(breathPhase) * 2.5 * scale : 0;
       const offsetY = breathing ? Math.sin(breathPhase - Math.PI / 2) * 3.5 * scale : 0;

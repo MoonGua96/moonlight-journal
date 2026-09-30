@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import {
   getDataDirectory,
+  isLocalPersonal,
   isLocalUat,
   loadState,
   moveDataDirectory,
   saveState,
 } from "./repository";
 import { initialState, type AppState } from "./types";
-import { promoteDueTodos } from "./todos";
+import { updateTodoLifecycle } from "./todos";
 
 const localDateKey = (date: Date) =>
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -20,17 +21,22 @@ export function useAppState() {
   );
   const [dataDirectory, setDataDirectory] = useState("");
   const [isUat, setIsUat] = useState(false);
+  const [isPersonal, setIsPersonal] = useState(false);
   const timer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
-    Promise.all([loadState(), getDataDirectory(), isLocalUat()]).then(
-      ([value, path, localUat]) => {
+    Promise.all([
+      loadState(),
+      getDataDirectory(),
+      isLocalUat(),
+      isLocalPersonal(),
+    ]).then(([value, path, localUat, localPersonal]) => {
         setState(value);
         setDataDirectory(path);
         setIsUat(localUat);
+        setIsPersonal(localPersonal);
         setReady(true);
-      },
-    );
+      });
   }, []);
 
   useEffect(() => {
@@ -38,7 +44,7 @@ export function useAppState() {
     const promote = () => {
       const date = localDateKey(new Date());
       setState((current) => {
-        const todos = promoteDueTodos(current.todos, date);
+        const todos = updateTodoLifecycle(current.todos, date);
         return todos === current.todos ? current : { ...current, todos };
       });
     };
@@ -74,6 +80,7 @@ export function useAppState() {
     saveStatus,
     dataDirectory,
     isUat,
+    isPersonal,
     changeDataDirectory,
   };
 }

@@ -21,9 +21,17 @@ fn is_local_uat_app(app: &tauri::AppHandle) -> bool {
     app.config().identifier == UAT_IDENTIFIER
 }
 
+fn is_local_personal_app() -> bool {
+    option_env!("MOONLIGHT_PERSONAL_BUILD") == Some("1")
+}
+
+fn can_load_local_private_resources(app: &tauri::AppHandle) -> bool {
+    is_local_uat_app(app) || is_local_personal_app()
+}
+
 fn local_uat_resource_path(app: &tauri::AppHandle, resource: &str) -> Result<PathBuf, String> {
-    if !is_local_uat_app(app) {
-        return Err("本機 UAT 資源只允許 UAT 應用程式使用".into());
+    if !can_load_local_private_resources(app) {
+        return Err("本機私人資源只允許 UAT 或個人版使用".into());
     }
     if cfg!(debug_assertions) {
         let project_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -210,6 +218,11 @@ fn is_local_uat(app: tauri::AppHandle) -> bool {
 }
 
 #[tauri::command]
+fn is_local_personal() -> bool {
+    is_local_personal_app()
+}
+
+#[tauri::command]
 fn load_local_uat_profile(app: tauri::AppHandle) -> Result<String, String> {
     let path = local_uat_resource_path(&app, "uat-profile.json")?;
     fs::read_to_string(path).map_err(|error| error.to_string())
@@ -269,7 +282,7 @@ fn default_data_directory(app: tauri::AppHandle) -> Result<String, String> {
         .map_err(|error| error.to_string())?;
     // UAT must stay on its configured local data directory and must never
     // discover or reuse the shared app's legacy database location.
-    if is_local_uat_app(&app) {
+    if is_local_uat_app(&app) || is_local_personal_app() {
         return Ok(current.to_string_lossy().into_owned());
     }
     if current.join("moonlight.db").exists() {
@@ -907,6 +920,7 @@ pub fn run() {
         }))
         .invoke_handler(tauri::generate_handler![
             is_local_uat,
+            is_local_personal,
             load_local_uat_profile,
             load_local_uat_pet_assets,
             default_data_directory,

@@ -52,7 +52,7 @@ import {
   getTodoCalendarEntries,
   isMultiDayTodo,
   prepareTodoForSave,
-  promoteDueTodos,
+  updateTodoLifecycle,
   toggleTodoCompletion,
 } from "./data/todos";
 import { useAppState } from "./data/useAppState";
@@ -436,7 +436,7 @@ function CalendarEntryControl({
   const overdueMarker = item.overdueDays ? "⚠" : "";
   return (
     <div
-      className={`calendar-entry-control ${className} ${checkable ? "checkable" : ""} ${item.completed ? "completed" : ""}`}
+      className={`calendar-entry-control ${className} ${item.type === "progress" ? "progress-entry" : ""} ${checkable ? "checkable" : ""} ${item.completed ? "completed" : ""}`}
       style={{ ...paletteStyle(item.color), ...style }}
     >
       {checkable && (
@@ -683,8 +683,11 @@ function CalendarPage({
       todos: current.todos.map((todo) => {
         if (todo.id !== item.todoId) return todo;
         const toggled = toggleTodoCompletion(todo, item.occurrenceDate!);
-        if (todo.recurrence || isMultiDayTodo(todo)) return toggled;
-        const completed = (toggled.completedDates || []).includes(item.occurrenceDate!);
+        if (todo.recurrence) return toggled;
+        const completedDates = toggled.completedDates || [];
+        const completed = isMultiDayTodo(todo)
+          ? completedDates.length > 0
+          : completedDates.includes(item.occurrenceDate!);
         return changeTodoStatus(toggled, completed ? "done" : "doing", item.occurrenceDate!);
       }),
     }));
@@ -1038,7 +1041,7 @@ function CalendarPage({
               const todos = existing
                 ? current.todos.map((item) => item.id === todo.id ? next : item)
                 : [...current.todos, next];
-              return { ...current, todos: promoteDueTodos(todos, dateKey(new Date())) };
+              return { ...current, todos: updateTodoLifecycle(todos, dateKey(new Date())) };
             });
             setTodoEditor(undefined);
           }}
@@ -1231,7 +1234,7 @@ function TodoPage({
     setState((s) => {
       const existing = s.todos.find((item) => item.id === todo.id);
       const next = prepareTodoForSave(existing, todo, dateKey(new Date()), options);
-      const todos = promoteDueTodos(existing
+      const todos = updateTodoLifecycle(existing
         ? s.todos.map((item) => item.id === todo.id ? next : item)
         : [...s.todos, next], dateKey(new Date()));
       return {
@@ -2670,14 +2673,17 @@ function SettingsPage({
   dataDirectory,
   changeDataDirectory,
   isUat,
+  isPersonal,
 }: {
   state: AppState;
   setState: StateSetter;
   dataDirectory: string;
   changeDataDirectory: (path: string) => Promise<void>;
   isUat: boolean;
+  isPersonal: boolean;
 }) {
   const settings = state.settings;
+  const usesMoonLady = isUat || isPersonal;
   const [path, setPath] = useState(dataDirectory);
   const [pathMessage, setPathMessage] = useState("");
   const [backupPath, setBackupPath] = useState(settings.backupDirectory);
@@ -2749,7 +2755,7 @@ function SettingsPage({
       settings: { ...current.settings, petAppearancePath: "" },
     }));
     setPetAppearanceUrl("");
-    setPetAppearanceMessage(`已還原${isUat ? " Q 版月娘" : "月光精靈"}內建預設外觀。`);
+    setPetAppearanceMessage(`已還原${usesMoonLady ? " Q 版月娘" : "月光精靈"}內建預設外觀。`);
   };
   const importBackup = async (file?: File) => {
     if (!file) return;
@@ -2884,7 +2890,7 @@ function SettingsPage({
       </Panel>
       <Panel title="寵物外觀自訂">
         <p className="setting-hint">
-          同一張自訂圖片會用於 App 內寵物與 Windows 桌面寵物。未自訂時，{isUat ? "私人 UAT 使用 Q 版月娘" : "共用版使用月光精靈"}。
+          同一張自訂圖片會用於 App 內寵物與 Windows 桌面寵物。未自訂時，{isPersonal ? "個人版使用 Q 版月娘" : isUat ? "私人 UAT 使用 Q 版月娘" : "共用版使用月光精靈"}。
         </p>
         <div className="pet-appearance-preview" aria-live="polite">
           {petAppearanceUrl ? (
@@ -2892,7 +2898,7 @@ function SettingsPage({
           ) : (
             <div className="pet-appearance-default">
               <span>內建預設</span>
-              <strong>{isUat ? "Q 版月娘" : "月光精靈"}</strong>
+              <strong>{usesMoonLady ? "Q 版月娘" : "月光精靈"}</strong>
             </div>
           )}
         </div>
@@ -3422,13 +3428,15 @@ function FloatingMoon({
   state,
   setState,
   isUat,
+  isPersonal,
 }: {
   state: AppState;
   setState: StateSetter;
   isUat: boolean;
+  isPersonal: boolean;
 }) {
   const s = state.settings;
-  const appearance: FloatingPetAppearance = isUat ? "local-pet" : "shared-spirit";
+  const appearance: FloatingPetAppearance = isUat || isPersonal ? "local-pet" : "shared-spirit";
   const [localPetAssets, setLocalPetAssets] = useState<LocalUatPetAssets | null>(null);
   const [customPetImageUrl, setCustomPetImageUrl] = useState("");
   const [interactionTrigger, setInteractionTrigger] = useState(0);
@@ -3628,6 +3636,7 @@ export default function App() {
     saveStatus,
     dataDirectory,
     isUat,
+    isPersonal,
     changeDataDirectory,
   } = useAppState();
   const [page, setPage] = useState<PageName>("today");
@@ -3761,6 +3770,7 @@ export default function App() {
         dataDirectory={dataDirectory}
         changeDataDirectory={changeDataDirectory}
         isUat={isUat}
+        isPersonal={isPersonal}
       />
     );
   return (
@@ -3859,7 +3869,12 @@ export default function App() {
         </Modal>
       )}
       </div>
-      <FloatingMoon state={state} setState={setState} isUat={isUat} />
+      <FloatingMoon
+        state={state}
+        setState={setState}
+        isUat={isUat}
+        isPersonal={isPersonal}
+      />
     </>
   );
 }

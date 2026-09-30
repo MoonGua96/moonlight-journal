@@ -1834,7 +1834,6 @@ button:disabled {
   pointer-events: none;
   -webkit-user-drag: none;
 }
-.floating-moon.has-custom-pet > .custom-pet-image,
 .pet-character.pet-custom-image > img {
   animation: pet-custom-image-idle 6.4s ease-in-out infinite;
   transform-origin: 50% 78%;
@@ -4431,7 +4430,7 @@ html.pet-root #root {
 }
 .calendar-entry-open span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .calendar-month-entry .calendar-entry-open span { font-size: 8px; line-height: 1.3; white-space: nowrap; }
-.calendar-month-entry.completed .calendar-entry-open span { text-decoration: line-through; opacity: .62; }
+.calendar-month-entry.completed:not(.progress-entry) .calendar-entry-open span { text-decoration: line-through; opacity: .62; }
 .calendar-month-entry .calendar-entry-open small { font-size: 7px; color: var(--muted); }
 .multi-day-progress { color: var(--muted); font-size: 7px !important; }
 .progress-preview {
@@ -4477,10 +4476,10 @@ html.pet-root #root {
 .calendar-timeline-event .calendar-entry-open { align-self: stretch; align-content: center; overflow: hidden; }
 .calendar-timeline-event .calendar-entry-open span { overflow: hidden; white-space: normal; overflow-wrap: anywhere; font-size: 8px; line-height: 1.2; }
 .calendar-timeline-event .calendar-entry-open small { font-size: 7px; line-height: 1.1; }
-.calendar-timeline-event.completed .calendar-entry-open span { text-decoration: line-through; opacity: .62; }
+.calendar-timeline-event.completed:not(.progress-entry) .calendar-entry-open span { text-decoration: line-through; opacity: .62; }
 .calendar-view-item > input, .calendar-day-item > input { width: 12px; height: 12px; margin: 0; accent-color: var(--purple); }
 .calendar-view-item .calendar-entry-open span, .calendar-day-item .calendar-entry-open span { white-space: normal; overflow-wrap: anywhere; }
-.calendar-view-item.completed .calendar-entry-open span, .calendar-day-item.completed .calendar-entry-open span { text-decoration: line-through; opacity: .62; }
+.calendar-view-item.completed:not(.progress-entry) .calendar-entry-open span, .calendar-day-item.completed:not(.progress-entry) .calendar-entry-open span { text-decoration: line-through; opacity: .62; }
 .calendar-entry-open small { color: inherit; }
 .dark .days > .calendar-day-cell { background: #37303b; color: #f5f1f7; border-color: #5d5364; }
 .dark .days > .calendar-day-cell:hover { background: #45394e; }

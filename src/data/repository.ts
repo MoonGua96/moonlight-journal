@@ -8,6 +8,7 @@ const STORAGE_KEY = "moonlight-journal.v0.2.state";
 const DATA_DIR_KEY = "moonlight-journal.data-directory";
 let activeDataDirectory = "";
 let localUatPromise: Promise<boolean> | null = null;
+let localPersonalPromise: Promise<boolean> | null = null;
 
 export async function isLocalUat() {
   if (!window.__TAURI_INTERNALS__) return false;
@@ -16,6 +17,17 @@ export async function isLocalUat() {
     localUatPromise = invoke<boolean>("is_local_uat").catch(() => false);
   }
   return localUatPromise;
+}
+
+export async function isLocalPersonal() {
+  if (!window.__TAURI_INTERNALS__) return false;
+  if (!localPersonalPromise) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    localPersonalPromise = invoke<boolean>("is_local_personal").catch(
+      () => false,
+    );
+  }
+  return localPersonalPromise;
 }
 
 const cloneInitial = (): AppState => structuredClone(initialState);
@@ -32,6 +44,7 @@ export const normalizeState = (value: Partial<AppState>): AppState => {
       (period) => Boolean(period?.startDate),
     );
     const hasActivePause = pausePeriods.some((period) => !period.endDate);
+    const donePeriods = (todo.donePeriods || []).filter((period) => Boolean(period?.startDate));
     return {
       ...normalized,
       kind: (todo.kind === "progress" ? "progress" : todo.recurrence?.rules?.length ? "recurring" : todo.kind || "task") as TodoKind,
@@ -43,7 +56,7 @@ export const normalizeState = (value: Partial<AppState>): AppState => {
         todo.status === "paused" && !hasActivePause
           ? [...pausePeriods, { startDate: todayKey }]
           : pausePeriods,
-      donePeriods: (todo.donePeriods || []).filter((period) => Boolean(period?.startDate)),
+      donePeriods,
       progressLogs: (todo.progressLogs || []).map((log) => ({
         ...log,
         text: log.text || "",
@@ -224,7 +237,7 @@ export const normalizeState = (value: Partial<AppState>): AppState => {
 async function dataDirectory() {
   if (!window.__TAURI_INTERNALS__) return "瀏覽器預覽資料";
   if (activeDataDirectory) return activeDataDirectory;
-  if (await isLocalUat()) {
+  if ((await isLocalUat()) || (await isLocalPersonal())) {
     const { invoke } = await import("@tauri-apps/api/core");
     activeDataDirectory = await invoke<string>("default_data_directory");
     localStorage.setItem(DATA_DIR_KEY, activeDataDirectory);
@@ -253,7 +266,7 @@ export async function loadState(): Promise<AppState> {
       });
       if (value) return normalizeState(JSON.parse(value));
       const initial = cloneInitial();
-      if (await isLocalUat()) {
+      if ((await isLocalUat()) || (await isLocalPersonal())) {
         const profileJson = await invoke<string>("load_local_uat_profile");
         const profile = JSON.parse(profileJson) as {
           userName?: unknown;

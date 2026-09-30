@@ -170,6 +170,31 @@ export function promoteDueTodos(todos: Todo[], date = todayLocal()): Todo[] {
   return changed ? next : todos;
 }
 
+const oneCalendarMonthAfter = (date: string) => {
+  const value = parseDate(date);
+  const originalDay = value.getDate();
+  value.setDate(1);
+  value.setMonth(value.getMonth() + 1);
+  const lastDay = daysInMonth(value.getFullYear(), value.getMonth());
+  value.setDate(Math.min(originalDay, lastDay));
+  return dayKey(value);
+};
+
+export function updateTodoLifecycle(todos: Todo[], date = todayLocal()): Todo[] {
+  const promoted = promoteDueTodos(todos, date);
+  let changed = promoted !== todos;
+  const next = promoted.map((todo) => {
+    if (todo.deletedAt || todo.archivedAt || todo.status !== "done") return todo;
+    const completedOn = [...(todo.donePeriods || [])]
+      .reverse()
+      .find((period) => !period.endDate)?.startDate;
+    if (!completedOn || oneCalendarMonthAfter(completedOn) > date) return todo;
+    changed = true;
+    return { ...todo, archivedAt: new Date().toISOString() };
+  });
+  return changed ? next : todos;
+}
+
 const isPausedAfterStart = (todo: Todo, date: string) =>
   (todo.pausePeriods || []).some(
     (period) => date > period.startDate && (!period.endDate || date <= period.endDate),
@@ -221,7 +246,11 @@ const entryFromOccurrence = (
 });
 
 export function getTodoCalendarEntries(todo: Todo, date: string): TodoCalendarEntry[] {
-  if (todo.deletedAt || isPausedAfterStart(todo, date)) return [];
+  const archivedAt = todo.archivedAt ? new Date(todo.archivedAt) : undefined;
+  const archivedOn = archivedAt && !Number.isNaN(archivedAt.getTime())
+    ? dayKey(archivedAt)
+    : undefined;
+  if (todo.deletedAt || (archivedOn && date > archivedOn) || isPausedAfterStart(todo, date)) return [];
   const inCompletedGap = (todo.donePeriods || []).some(
     (period) => date > period.startDate && (!period.endDate || date <= period.endDate),
   );
@@ -233,12 +262,8 @@ export function getTodoCalendarEntries(todo: Todo, date: string): TodoCalendarEn
     const end = todo.endDate || todo.dueDate || start;
     const withinRange = Boolean(start && end && date >= start && date <= end);
     const completedOnDate = (todo.donePeriods || []).some((period) => period.startDate === date);
-    const openDonePeriod = [...(todo.donePeriods || [])].reverse().find((period) => !period.endDate);
-    const beforeOrOnFinalCompletion = todo.status === "done" && openDonePeriod
-      ? date <= openDonePeriod.startDate
-      : false;
-    const wasActiveOnDate = todo.status === "doing" || completedOnDate || beforeOrOnFinalCompletion;
-    const overdueDays = Boolean(end) && wasActiveOnDate && date > end && date <= todayLocal()
+    const wasActiveOnDate = todo.status === "doing" || completedOnDate;
+    const overdueDays = todo.status !== "done" && Boolean(end) && wasActiveOnDate && date > end && date <= todayLocal()
       ? Math.round((parseDate(date).getTime() - parseDate(end).getTime()) / 86_400_000)
       : 0;
     entries = withinRange || overdueDays > 0 || completedOnDate
